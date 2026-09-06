@@ -1,0 +1,12 @@
+.git
+node_modules
+**/node_modules
+**/.next
+**/.expo
+**/dist
+**/*.tsbuildinfo
+**/src/generated
+**/coverage
+.env
+*.log
+docs

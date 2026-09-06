@@ -1,0 +1,237 @@
+name: delivereats
+
+x-service-common: &service-common
+  restart: unless-stopped
+  env_file: .env
+  networks: [delivereats]
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres-users:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: users_db
+    ports: ['5433:5432']
+    volumes: [users-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d users_db']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [delivereats]
+
+  postgres-orders:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: orders_db
+    ports: ['5434:5432']
+    volumes: [orders-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d orders_db']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [delivereats]
+
+  postgres-drivers:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: drivers_db
+    ports: ['5435:5432']
+    volumes: [drivers-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d drivers_db']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [delivereats]
+
+  postgres-notifications:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: notifications_db
+    ports: ['5436:5432']
+    volumes: [notifications-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d notifications_db']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [delivereats]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports: ['6379:6379']
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [delivereats]
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    volumes: [rabbitmq-data:/var/lib/rabbitmq]
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 8s
+      timeout: 5s
+      retries: 20
+    networks: [delivereats]
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+    networks: [delivereats]
+
+  users-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: infrastructure/docker/service.Dockerfile
+      args:
+        SERVICE_NAME: '@delivereats/users-service'
+    environment:
+      SERVICE_NAME: '@delivereats/users-service'
+      PORT: 3001
+      DATABASE_URL: ${USERS_DATABASE_URL}
+    depends_on:
+      postgres-users: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  orders-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: infrastructure/docker/service.Dockerfile
+      args:
+        SERVICE_NAME: '@delivereats/orders-service'
+    environment:
+      SERVICE_NAME: '@delivereats/orders-service'
+      PORT: 3002
+      DATABASE_URL: ${ORDERS_DATABASE_URL}
+      DRIVERS_SERVICE_URL: http://drivers-service:3003
+    depends_on:
+      postgres-orders: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/health']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  drivers-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: infrastructure/docker/service.Dockerfile
+      args:
+        SERVICE_NAME: '@delivereats/drivers-service'
+    environment:
+      SERVICE_NAME: '@delivereats/drivers-service'
+      PORT: 3003
+      DATABASE_URL: ${DRIVERS_DATABASE_URL}
+      ORDERS_SERVICE_URL: http://orders-service:3002
+    depends_on:
+      postgres-drivers: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3003/health']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  notifications-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: infrastructure/docker/service.Dockerfile
+      args:
+        SERVICE_NAME: '@delivereats/notifications-service'
+    environment:
+      SERVICE_NAME: '@delivereats/notifications-service'
+      PORT: 3004
+      DATABASE_URL: ${NOTIFICATIONS_DATABASE_URL}
+    depends_on:
+      postgres-notifications: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mailpit: { condition: service_started }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3004/health']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+    env_file: .env
+    environment:
+      USERS_SERVICE_URL: http://users-service:3001
+      ORDERS_SERVICE_URL: http://orders-service:3002
+      DRIVERS_SERVICE_URL: http://drivers-service:3003
+      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3004
+    ports: ['3000:3000']
+    depends_on:
+      users-service: { condition: service_healthy }
+      orders-service: { condition: service_healthy }
+      drivers-service: { condition: service_healthy }
+      notifications-service: { condition: service_healthy }
+    networks: [delivereats]
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ['80:80']
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      web: { condition: service_started }
+      users-service: { condition: service_healthy }
+      orders-service: { condition: service_healthy }
+      drivers-service: { condition: service_healthy }
+      notifications-service: { condition: service_healthy }
+    networks: [delivereats]
+
+networks:
+  delivereats:
+    driver: bridge
+
+volumes:
+  users-data:
+  orders-data:
+  drivers-data:
+  notifications-data:
+  redis-data:
+  rabbitmq-data:

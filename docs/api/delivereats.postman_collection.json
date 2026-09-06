@@ -1,0 +1,321 @@
+{
+  "info": {
+    "_postman_id": "7b3e40f4-cb88-4f86-a21d-delivereats01",
+    "name": "DeliverEats Ayacucho",
+    "description": "Endpoints esenciales del flujo multi-negocio. Ejecutar contra el gateway Nginx local.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost" },
+    { "key": "customerToken", "value": "" },
+    { "key": "adminToken", "value": "" },
+    { "key": "driverToken", "value": "" },
+    { "key": "orderId", "value": "" },
+    { "key": "paymentId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Autenticación",
+      "item": [
+        {
+          "name": "Login cliente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('customerToken', body.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"cliente@delivereats.local\",\n  \"password\": \"Demo12345!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/users/auth/login"
+          }
+        },
+        {
+          "name": "Login admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('adminToken', body.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@delivereats.local\",\n  \"password\": \"Demo12345!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/users/auth/login"
+          }
+        },
+        {
+          "name": "Login driver",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('driverToken', body.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"driver@delivereats.local\",\n  \"password\": \"Demo12345!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/users/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catálogo y carrito",
+      "item": [
+        {
+          "name": "Listar comercios",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders/merchants" }
+        },
+        {
+          "name": "Detalle Botica",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/orders/merchants/51000000-0000-4000-8000-000000000001"
+          }
+        },
+        {
+          "name": "Agregar kit Botica",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"71000000-0000-4000-8000-000000000001\",\n  \"quantity\": 1\n}"
+            },
+            "url": "{{baseUrl}}/api/orders/cart/items"
+          }
+        },
+        {
+          "name": "Agregar pack Fresh Market",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"72000000-0000-4000-8000-000000000002\",\n  \"quantity\": 1\n}"
+            },
+            "url": "{{baseUrl}}/api/orders/cart/items"
+          }
+        },
+        {
+          "name": "Ver carrito multi-negocio",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/orders/cart"
+          }
+        },
+        {
+          "name": "Checkout Yape + PDGP10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('orderId', body.order.id);",
+                  "pm.collectionVariables.set('paymentId', body.payment.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deliveryAddressId\": \"aaaaaaaa-2222-4222-8222-222222222222\",\n  \"deliveryAddress\": \"Jr. 28 de Julio 325, Ayacucho\",\n  \"deliveryLatitude\": -13.1603,\n  \"deliveryLongitude\": -74.2257,\n  \"paymentMethod\": \"YAPE\",\n  \"promoCode\": \"PDGP10\"\n}"
+            },
+            "url": "{{baseUrl}}/api/orders/cart/checkout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Operación",
+      "item": [
+        {
+          "name": "Aprobar pago mock",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"approved\": true\n}" },
+            "url": "{{baseUrl}}/api/orders/payments/{{paymentId}}/mock-decision"
+          }
+        },
+        {
+          "name": "Buscar driver",
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"SEARCHING_DRIVER\"\n}" },
+            "url": "{{baseUrl}}/api/orders/orders/{{orderId}}/status"
+          }
+        },
+        {
+          "name": "Oferta activa driver",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{driverToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/drivers/drivers/me/offers/active"
+          }
+        },
+        {
+          "name": "Detalle pedido",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/orders/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Tracking REST",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/drivers/tracking/orders/{{orderId}}/location"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Administración",
+      "item": [
+        {
+          "name": "Dashboard metrics",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/orders/admin/metrics"
+          }
+        },
+        {
+          "name": "Usuarios",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/users/users"
+          }
+        },
+        {
+          "name": "Repartidores",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/drivers/admin/drivers"
+          }
+        },
+        {
+          "name": "Promociones",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/orders/promotions"
+          }
+        },
+        {
+          "name": "Auditoría",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "url": "{{baseUrl}}/api/users/users/audit"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        { "name": "Users", "request": { "method": "GET", "url": "{{baseUrl}}/api/users/health" } },
+        {
+          "name": "Orders",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders/health" }
+        },
+        {
+          "name": "Drivers",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/drivers/health" }
+        },
+        {
+          "name": "Notifications",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/notifications/health" }
+        }
+      ]
+    }
+  ]
+}

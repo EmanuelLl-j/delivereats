@@ -1,0 +1,42 @@
+{
+  "name": "delivereats-ayacucho",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "postinstall": "pnpm db:generate",
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm --filter @delivereats/web dev",
+    "dev:services": "pnpm --parallel --filter @delivereats/*service dev",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm --filter @delivereats/shared-types build && pnpm --filter @delivereats/shared-config build && pnpm --filter @delivereats/shared-utils build && pnpm --filter @delivereats/backend-kit build && pnpm -r --if-present typecheck",
+    "test": "pnpm --filter @delivereats/shared-types build && pnpm --filter @delivereats/shared-utils build && pnpm --filter @delivereats/backend-kit build && pnpm -r --if-present test",
+    "test:e2e": "node --test tests/e2e/*.test.mjs",
+    "test:coverage": "pnpm -r --if-present test:coverage",
+    "db:generate": "pnpm --filter @delivereats/users-service db:generate && pnpm --filter @delivereats/orders-service db:generate && pnpm --filter @delivereats/drivers-service db:generate && pnpm --filter @delivereats/notifications-service db:generate",
+    "db:migrate": "node scripts/run-databases.mjs migrate",
+    "db:seed": "node scripts/run-databases.mjs seed",
+    "mobile:client": "pnpm --filter @delivereats/mobile-client start",
+    "mobile:driver": "pnpm --filter @delivereats/mobile-driver start",
+    "compose:up": "docker compose up -d --build",
+    "compose:down": "docker compose down",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@types/node": "^24.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.42.0",
+    "@typescript-eslint/parser": "^8.42.0",
+    "eslint": "^9.34.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.3.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  }
+}

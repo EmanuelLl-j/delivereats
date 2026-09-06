@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DriverStatus {
+  OFFLINE
+  AVAILABLE
+  RESERVED
+  BUSY
+  SUSPENDED
+}
+
+enum VehicleType {
+  MOTORCYCLE
+  BICYCLE
+  CAR
+}
+
+enum AssignmentStatus {
+  OFFERED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  COMPLETED
+}
+
+enum AssignmentRequestStatus {
+  SEARCHING
+  ASSIGNED
+  COMPLETED
+  CANCELLED
+}
+
+model DriverProfile {
+  id               String             @id @default(uuid()) @db.Uuid
+  userId           String             @unique @db.Uuid
+  documentNumber   String             @unique
+  vehicleType      VehicleType
+  vehiclePlate     String?
+  licenseNumber    String?
+  status           DriverStatus       @default(OFFLINE)
+  rating           Decimal            @default(5) @db.Decimal(3, 2)
+  completedOrders  Int                @default(0)
+  currentLatitude  Decimal?           @db.Decimal(10, 7)
+  currentLongitude Decimal?           @db.Decimal(10, 7)
+  lastLocationAt   DateTime?
+  version          Int                @default(0)
+  approvedAt       DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  assignments      DriverAssignment[]
+  locationSamples  LocationSample[]
+
+  @@index([status, lastLocationAt])
+  @@map("driver_profiles")
+}
+
+model DriverAssignment {
+  id          String           @id @default(uuid()) @db.Uuid
+  orderId     String           @db.Uuid
+  driverId    String           @db.Uuid
+  status      AssignmentStatus @default(OFFERED)
+  estimatedEarnings Decimal     @default(0) @db.Decimal(10, 2)
+  pickupCount Int               @default(1)
+  destination String?
+  expiresAt   DateTime
+  assignedAt  DateTime         @default(now())
+  acceptedAt  DateTime?
+  rejectedAt  DateTime?
+  completedAt DateTime?
+  driver      DriverProfile    @relation(fields: [driverId], references: [id])
+
+  @@index([driverId, status])
+  @@index([orderId, status])
+  @@map("driver_assignments")
+}
+
+model AssignmentRequest {
+  orderId           String                  @id @db.Uuid
+  pickupPoints      Json
+  destination       Json
+  estimatedEarnings Decimal                 @db.Decimal(10, 2)
+  pickupCount       Int
+  status            AssignmentRequestStatus @default(SEARCHING)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([status, updatedAt])
+  @@map("assignment_requests")
+}
+
+model LocationSample {
+  id        String        @id @default(uuid()) @db.Uuid
+  driverId  String        @db.Uuid
+  orderId   String?       @db.Uuid
+  latitude  Decimal       @db.Decimal(10, 7)
+  longitude Decimal       @db.Decimal(10, 7)
+  speed     Decimal?      @db.Decimal(7, 2)
+  createdAt DateTime      @default(now())
+  driver    DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, createdAt])
+  @@index([orderId, createdAt])
+  @@map("location_samples")
+}

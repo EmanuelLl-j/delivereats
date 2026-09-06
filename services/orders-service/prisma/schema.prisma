@@ -1,0 +1,289 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MerchantCategory {
+  RESTAURANT
+  SUPERMARKET
+  PHARMACY
+  EXPRESS
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SEARCHING_DRIVER
+  ASSIGNED
+  PREPARING
+  READY_FOR_PICKUP
+  PICKING_UP
+  ON_THE_WAY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  MERCADO_PAGO
+  YAPE
+  PLIN
+  CASH
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  REFUNDED
+  PAID
+}
+
+enum PromotionType {
+  PERCENTAGE
+  FIXED
+  FREE_DELIVERY
+}
+
+enum PaymentProvider {
+  MOCK
+  MERCADO_PAGO
+}
+
+model Merchant {
+  id                  String           @id @default(uuid()) @db.Uuid
+  ownerUserId         String           @db.Uuid
+  name                String
+  description         String
+  category            MerchantCategory
+  ruc                 String           @unique
+  phone               String
+  email               String
+  logoUrl             String?
+  coverUrl            String?
+  address             String
+  latitude            Decimal          @db.Decimal(10, 7)
+  longitude           Decimal          @db.Decimal(10, 7)
+  rating              Decimal          @default(0) @db.Decimal(3, 2)
+  deliveryEstimateMin Int
+  deliveryEstimateMax Int
+  isOpen              Boolean          @default(true)
+  isActive            Boolean          @default(false)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  categories          Category[]
+  products            Product[]
+  cartItems           CartItem[]
+  subOrders           SubOrder[]
+
+  @@index([category, isActive, isOpen])
+  @@index([ownerUserId])
+  @@map("merchants")
+}
+
+model Category {
+  id         String    @id @default(uuid()) @db.Uuid
+  merchantId String    @db.Uuid
+  name       String
+  sortOrder  Int       @default(0)
+  isActive   Boolean   @default(true)
+  merchant   Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  products   Product[]
+
+  @@unique([merchantId, name])
+  @@map("categories")
+}
+
+model Product {
+  id          String      @id @default(uuid()) @db.Uuid
+  merchantId  String      @db.Uuid
+  categoryId  String      @db.Uuid
+  name        String
+  description String
+  price       Decimal     @db.Decimal(10, 2)
+  imageUrl    String?
+  isAvailable Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  merchant    Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  category    Category    @relation(fields: [categoryId], references: [id])
+  cartItems   CartItem[]
+  orderItems  OrderItem[]
+
+  @@index([merchantId, isAvailable])
+  @@map("products")
+}
+
+model Cart {
+  id         String     @id @default(uuid()) @db.Uuid
+  customerId String     @unique @db.Uuid
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  items      CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id         String   @id @default(uuid()) @db.Uuid
+  cartId     String   @db.Uuid
+  productId  String   @db.Uuid
+  merchantId String   @db.Uuid
+  quantity   Int
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  cart       Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id])
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  @@unique([cartId, productId])
+  @@map("cart_items")
+}
+
+model Order {
+  id                    String         @id @default(uuid()) @db.Uuid
+  orderNumber           String         @unique
+  customerId            String         @db.Uuid
+  deliveryAddressId     String         @db.Uuid
+  deliveryAddress       String
+  deliveryLatitude      Decimal        @db.Decimal(10, 7)
+  deliveryLongitude     Decimal        @db.Decimal(10, 7)
+  status                OrderStatus    @default(PENDING)
+  subtotal              Decimal        @db.Decimal(10, 2)
+  deliveryFee           Decimal        @db.Decimal(10, 2)
+  serviceFee            Decimal        @db.Decimal(10, 2)
+  discount              Decimal        @db.Decimal(10, 2)
+  total                 Decimal        @db.Decimal(10, 2)
+  paymentMethod         PaymentMethod
+  paymentStatus         PaymentStatus  @default(PENDING)
+  promoCode             String?
+  assignedDriverId      String?        @db.Uuid
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  subOrders             SubOrder[]
+  payments              PaymentIntent[]
+  ratings               Rating[]
+  statusHistory         OrderStatusHistory[]
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@index([assignedDriverId])
+  @@map("orders")
+}
+
+model SubOrder {
+  id             String      @id @default(uuid()) @db.Uuid
+  orderId        String      @db.Uuid
+  merchantId     String      @db.Uuid
+  status         OrderStatus @default(PENDING)
+  subtotal       Decimal     @db.Decimal(10, 2)
+  pickupSequence Int
+  pickedUpAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  order          Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  merchant       Merchant    @relation(fields: [merchantId], references: [id])
+  items          OrderItem[]
+
+  @@unique([orderId, merchantId])
+  @@index([merchantId, status])
+  @@map("sub_orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  subOrderId  String   @db.Uuid
+  productId   String   @db.Uuid
+  productName String
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  subtotal    Decimal  @db.Decimal(10, 2)
+  notes       String?
+  subOrder    SubOrder @relation(fields: [subOrderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
+}
+
+model Promotion {
+  id              String        @id @default(uuid()) @db.Uuid
+  code            String        @unique
+  type            PromotionType
+  value           Decimal       @db.Decimal(10, 2)
+  minimumAmount   Decimal       @default(0) @db.Decimal(10, 2)
+  maximumDiscount Decimal?      @db.Decimal(10, 2)
+  startsAt        DateTime
+  expiresAt       DateTime
+  usageLimit      Int?
+  usageCount      Int           @default(0)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([isActive, startsAt, expiresAt])
+  @@map("promotions")
+}
+
+model PaymentIntent {
+  id                String          @id @default(uuid()) @db.Uuid
+  orderId           String          @db.Uuid
+  provider          PaymentProvider
+  method            PaymentMethod
+  status            PaymentStatus   @default(PENDING)
+  amount            Decimal         @db.Decimal(10, 2)
+  currency          String          @default("PEN")
+  externalId        String?
+  providerReference String?
+  sandboxPayload    Json?
+  verifiedAt        DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  order             Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, status])
+  @@index([externalId])
+  @@map("payment_intents")
+}
+
+model OrderStatusHistory {
+  id          String      @id @default(uuid()) @db.Uuid
+  orderId     String      @db.Uuid
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  actorUserId String?     @db.Uuid
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model Rating {
+  id         String   @id @default(uuid()) @db.Uuid
+  orderId    String   @db.Uuid
+  customerId String   @db.Uuid
+  driverId   String?  @db.Uuid
+  score      Int
+  comment    String?
+  createdAt  DateTime @default(now())
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, customerId])
+  @@map("ratings")
+}
+
+model OrderSequence {
+  year      Int      @id
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("order_sequences")
+}

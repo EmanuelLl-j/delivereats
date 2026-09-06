@@ -1,0 +1,43 @@
+{
+  "name": "@delivereats/mobile-driver",
+  "version": "1.0.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build": "cross-env EXPO_NO_TELEMETRY=1 expo export --platform web --output-dir dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app lib components",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^5.2.1",
+    "@tanstack/react-query": "^5.85.5",
+    "expo": "~54.0.10",
+    "expo-constants": "~18.0.9",
+    "expo-location": "~19.0.7",
+    "expo-notifications": "~0.32.12",
+    "expo-router": "~6.0.8",
+    "expo-secure-store": "~15.0.7",
+    "expo-status-bar": "~3.0.8",
+    "lucide-react-native": "^0.542.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-hook-form": "^7.62.0",
+    "react-native": "0.81.4",
+    "react-native-maps": "1.20.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "~0.21.0",
+    "socket.io-client": "^4.8.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "cross-env": "^10.0.0",
+    "vitest": "^3.2.4"
+  }
+}
