@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
@@ -28,7 +28,7 @@ export class RegisterDto {
   @Length(2, 80)
   lastName!: string;
 
-  @ApiProperty({ example: 'cliente@delivereats.local' })
+  @ApiProperty({ example: 'persona@example.com' })
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.toLowerCase().trim() : value,
   )
@@ -40,15 +40,21 @@ export class RegisterDto {
   @IsPhoneNumber('PE')
   phone?: string;
 
-  @ApiProperty({ example: 'Demo12345!' })
+  @ApiProperty({ minLength: 12, maxLength: 72 })
+  @MaxLength(72)
   @IsStrongPassword({
-    minLength: 8,
+    minLength: 12,
     minLowercase: 1,
     minUppercase: 1,
     minNumbers: 1,
     minSymbols: 1,
   })
   password!: string;
+
+  @ApiPropertyOptional({ enum: ['CUSTOMER', 'DRIVER', 'MERCHANT'] })
+  @IsOptional()
+  @IsIn(['CUSTOMER', 'DRIVER', 'MERCHANT'])
+  role?: UserRole;
 }
 
 export class LoginDto {
@@ -86,8 +92,9 @@ export class ResetPasswordDto {
   token!: string;
 
   @ApiProperty()
+  @MaxLength(72)
   @IsStrongPassword({
-    minLength: 8,
+    minLength: 12,
     minLowercase: 1,
     minUppercase: 1,
     minNumbers: 1,
@@ -102,8 +109,9 @@ export class ChangePasswordDto {
   currentPassword!: string;
 
   @ApiProperty()
+  @MaxLength(72)
   @IsStrongPassword({
-    minLength: 8,
+    minLength: 12,
     minLowercase: 1,
     minUppercase: 1,
     minNumbers: 1,
@@ -179,10 +187,17 @@ export class UserStatusDto {
   status!: 'ACTIVE' | 'SUSPENDED';
 }
 
-export class AdminCreateUserDto extends RegisterDto {
+export class AdminCreateUserDto extends OmitType(RegisterDto, ['role'] as const) {
   @ApiProperty({ enum: UserRole })
   @IsEnum(UserRole)
   role!: UserRole;
+}
+
+export class VerificationDto {
+  @ApiProperty()
+  @IsString()
+  @Length(64, 64)
+  token!: string;
 }
 
 export class UserIdDto {

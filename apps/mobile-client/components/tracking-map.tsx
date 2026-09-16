@@ -12,7 +12,7 @@ export function TrackingMap({
   destinationLabel,
 }: {
   pickups: TrackingPoint[];
-  driver: { latitude: number; longitude: number };
+  driver?: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
   destinationLabel?: string;
 }) {
@@ -33,13 +33,14 @@ export function TrackingMap({
           </View>
         </Marker>
       ))}
-      <Marker coordinate={driver} title="Tu repartidor">
+      {driver && <Marker coordinate={driver} title="Tu repartidor">
         <View style={styles.driver}>
           <Bike size={19} color={colors.navy} />
         </View>
-      </Marker>
+      </Marker>}
       <Polyline
-        coordinates={[driver, ...pickups, destination]}
+        coordinates={[...(driver ? [driver] : []), ...pickups, destination]}
+        lineDashPattern={[6, 6]}
         strokeColor={colors.navy2}
         strokeWidth={4}
       />

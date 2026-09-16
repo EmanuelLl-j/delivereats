@@ -9,11 +9,8 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
-  Logger,
   MiddlewareConsumer,
   NestMiddleware,
-  OnModuleDestroy,
-  OnModuleInit,
   SetMetadata,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -24,9 +21,12 @@ import { ValidationPipe } from '@nestjs/common';
 import type { INestApplication, Type } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
-import amqp, { type ChannelModel, type ConfirmChannel } from 'amqplib';
 import { randomUUID } from 'node:crypto';
-import { EventEnvelope, type JwtPayload, UserRole } from '@delivereats/shared-types';
+import { type JwtPayload, UserRole } from '@delivereats/shared-types';
+import { internalRequest } from './internal';
+import { productionEnvironmentIssues } from './environment';
+export { productionEnvironmentIssues } from './environment';
+export * from './internal';
 
 export const IS_PUBLIC_KEY = 'isPublic';
 export const ROLES_KEY = 'roles';
@@ -61,11 +61,18 @@ export class JwtAuthGuard implements CanActivate {
     try {
       request.user = await this.jwt.verifyAsync<JwtPayload>(token, {
         secret: process.env.JWT_SECRET,
+        algorithms: ['HS256'],
       });
-      return true;
     } catch {
       throw new HttpException('Token inválido o vencido', HttpStatus.UNAUTHORIZED);
     }
+    const state = await internalRequest<{ status: string; role: string; authVersion: number }>(
+      'users', `/internal/users/${encodeURIComponent(request.user.sub)}/auth-state`,
+    );
+    if (state.status !== 'ACTIVE' || state.role !== request.user.role || state.authVersion !== request.user.authVersion) {
+      throw new HttpException('La sesión fue revocada. Inicia sesión nuevamente.', HttpStatus.UNAUTHORIZED);
+    }
+    return true;
   }
 }
 
@@ -128,11 +135,14 @@ export class ApiExceptionFilter implements ExceptionFilter {
 export type BootstrapOptions = {
   module: Type<unknown>;
   serviceName: string;
+  environmentService: 'users-service' | 'orders-service' | 'drivers-service' | 'notifications-service';
   port: number;
   description: string;
 };
 
 export async function bootstrapService(options: BootstrapOptions): Promise<INestApplication> {
+  const issues = productionEnvironmentIssues(process.env, options.environmentService);
+  if (issues.length) throw new Error('Configuración de producción inválida:\n' + issues.join('\n'));
   const app = await NestFactory.create(options.module, { bufferLogs: true });
   app.use(helmet());
   app.enableCors({
@@ -149,63 +159,12 @@ export async function bootstrapService(options: BootstrapOptions): Promise<INest
     .setVersion('1.0')
     .addBearerAuth()
     .build();
-  SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swaggerConfig));
+  if (process.env.NODE_ENV !== 'production') SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swaggerConfig));
   await app.listen(options.port, '0.0.0.0');
   return app;
 }
 
-@Injectable()
-export class EventPublisher implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(EventPublisher.name);
-  private connection?: ChannelModel;
-  private channel?: ConfirmChannel;
-  private readonly exchange = 'delivereats.events';
-
-  async onModuleInit(): Promise<void> {
-    if (process.env.RABBITMQ_ENABLED === 'false') return;
-    try {
-      this.connection = await amqp.connect(
-        process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5672',
-      );
-      this.channel = await this.connection.createConfirmChannel();
-      await this.channel.assertExchange(this.exchange, 'topic', { durable: true });
-    } catch (error) {
-      this.logger.warn(
-        `RabbitMQ no disponible al iniciar; las operaciones REST continúan: ${String(error)}`,
-      );
-    }
-  }
-
-  async publish<T extends Record<string, unknown>>(
-    name: string,
-    payload: T,
-    correlationId: string = randomUUID(),
-  ): Promise<boolean> {
-    if (!this.channel) return false;
-    const envelope: EventEnvelope<T> = {
-      id: randomUUID(),
-      name,
-      version: 1,
-      occurredAt: new Date().toISOString(),
-      correlationId,
-      payload,
-    };
-    this.channel.publish(this.exchange, name, Buffer.from(JSON.stringify(envelope)), {
-      persistent: true,
-      contentType: 'application/json',
-      messageId: envelope.id,
-      correlationId,
-      timestamp: Date.now(),
-    });
-    await this.channel.waitForConfirms();
-    return true;
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.channel?.close().catch(() => undefined);
-    await this.connection?.close().catch(() => undefined);
-  }
-}
+export { EventPublisher } from './events';
 
 export function domainError(
   code: string,

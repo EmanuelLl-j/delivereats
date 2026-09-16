@@ -1,23 +1,31 @@
 name: delivereats
 
+x-runtime-environment: &runtime-environment
+  NODE_ENV: ${NODE_ENV:-development}
+  JWT_SECRET: ${JWT_SECRET:?Ejecuta pnpm setup:local}
+  INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?Ejecuta pnpm setup:local}
+  EVENTS_ENCRYPTION_KEY: ${EVENTS_ENCRYPTION_KEY:?Ejecuta pnpm setup:local}
+  RABBITMQ_URL: ${RABBITMQ_URL}
+  CORS_ORIGINS: ${CORS_ORIGINS}
+  USERS_SERVICE_URL: http://users-service:3001
+  ORDERS_SERVICE_URL: http://orders-service:3002
+  DRIVERS_SERVICE_URL: http://drivers-service:3003
+  NOTIFICATIONS_SERVICE_URL: http://notifications-service:3004
+
 x-service-common: &service-common
   restart: unless-stopped
-  env_file: .env
   networks: [delivereats]
-  depends_on:
-    rabbitmq:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: '10m', max-file: '3' }
 
 services:
   postgres-users:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: users_db
-    ports: ['5433:5432']
+    environment: { POSTGRES_USER: '${POSTGRES_USER}', POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}', POSTGRES_DB: users_db }
+    ports: ['127.0.0.1:5433:5432']
     volumes: [users-data:/var/lib/postgresql/data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d users_db']
@@ -25,14 +33,11 @@ services:
       timeout: 3s
       retries: 20
     networks: [delivereats]
-
+    restart: unless-stopped
   postgres-orders:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: orders_db
-    ports: ['5434:5432']
+    environment: { POSTGRES_USER: '${POSTGRES_USER}', POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}', POSTGRES_DB: orders_db }
+    ports: ['127.0.0.1:5434:5432']
     volumes: [orders-data:/var/lib/postgresql/data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d orders_db']
@@ -40,14 +45,11 @@ services:
       timeout: 3s
       retries: 20
     networks: [delivereats]
-
+    restart: unless-stopped
   postgres-drivers:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: drivers_db
-    ports: ['5435:5432']
+    environment: { POSTGRES_USER: '${POSTGRES_USER}', POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}', POSTGRES_DB: drivers_db }
+    ports: ['127.0.0.1:5435:5432']
     volumes: [drivers-data:/var/lib/postgresql/data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d drivers_db']
@@ -55,14 +57,11 @@ services:
       timeout: 3s
       retries: 20
     networks: [delivereats]
-
+    restart: unless-stopped
   postgres-notifications:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: notifications_db
-    ports: ['5436:5432']
+    environment: { POSTGRES_USER: '${POSTGRES_USER}', POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}', POSTGRES_DB: notifications_db }
+    ports: ['127.0.0.1:5436:5432']
     volumes: [notifications-data:/var/lib/postgresql/data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d notifications_db']
@@ -70,152 +69,147 @@ services:
       timeout: 3s
       retries: 20
     networks: [delivereats]
-
+    restart: unless-stopped
   redis:
     image: redis:7.4-alpine
-    command: ['redis-server', '--appendonly', 'yes']
-    ports: ['6379:6379']
+    command: ['redis-server', '--appendonly', 'yes', '--requirepass', '${REDIS_PASSWORD:?Ejecuta pnpm setup:local}']
+    environment: { REDISCLI_AUTH: '${REDIS_PASSWORD}' }
+    ports: ['127.0.0.1:6379:6379']
     volumes: [redis-data:/data]
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 3s
-      retries: 20
+    healthcheck: { test: ['CMD', 'redis-cli', 'ping'], interval: 5s, timeout: 3s, retries: 20 }
     networks: [delivereats]
-
+    restart: unless-stopped
   rabbitmq:
     image: rabbitmq:4-management-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-    ports:
-      - '5672:5672'
-      - '15672:15672'
+    environment: { RABBITMQ_DEFAULT_USER: '${RABBITMQ_USER}', RABBITMQ_DEFAULT_PASS: '${RABBITMQ_PASSWORD}' }
+    ports: ['127.0.0.1:5672:5672', '127.0.0.1:15672:15672']
     volumes: [rabbitmq-data:/var/lib/rabbitmq]
-    healthcheck:
-      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
-      interval: 8s
-      timeout: 5s
-      retries: 20
+    healthcheck: { test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping'], interval: 8s, timeout: 5s, retries: 20 }
     networks: [delivereats]
-
+    restart: unless-stopped
   mailpit:
     image: axllent/mailpit:v1.27
-    ports:
-      - '1025:1025'
-      - '8025:8025'
+    ports: ['127.0.0.1:1025:1025', '127.0.0.1:8025:8025']
     networks: [delivereats]
-
+  # Optional real local audio server, no recordings or egress configured.
+  livekit:
+    image: livekit/livekit-server:v1.9.11
+    profiles: [audio]
+    command: ['--bind', '0.0.0.0', '--node-ip', '${LIVEKIT_NODE_IP:-127.0.0.1}', '--keys', '${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}', '--config', '/etc/livekit.yaml']
+    volumes: ['./infrastructure/livekit/local.yaml:/etc/livekit.yaml:ro']
+    ports: ['7880:7880', '7881:7881', '7882:7882/udp']
+    networks: [delivereats]
+    restart: unless-stopped
   users-service:
     <<: *service-common
     build:
       context: .
       dockerfile: infrastructure/docker/service.Dockerfile
-      args:
-        SERVICE_NAME: '@delivereats/users-service'
+      args: { SERVICE_NAME: '@delivereats/users-service' }
     environment:
-      SERVICE_NAME: '@delivereats/users-service'
+      <<: *runtime-environment
       PORT: 3001
       DATABASE_URL: ${USERS_DATABASE_URL}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      WEB_URL: ${WEB_URL}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-s3}
+      LOCAL_STORAGE_PATH: /app/private-files
+      LOCAL_STORAGE_SIGNING_KEY: ${LOCAL_STORAGE_SIGNING_KEY:-}
+      PUBLIC_USERS_URL: ${PUBLIC_USERS_URL}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+    volumes: [private-files:/app/private-files]
     depends_on:
       postgres-users: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health']
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
+    healthcheck: { test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/ready'], interval: 10s, timeout: 8s, retries: 20, start_period: 30s }
   orders-service:
     <<: *service-common
     build:
       context: .
       dockerfile: infrastructure/docker/service.Dockerfile
-      args:
-        SERVICE_NAME: '@delivereats/orders-service'
+      args: { SERVICE_NAME: '@delivereats/orders-service' }
     environment:
-      SERVICE_NAME: '@delivereats/orders-service'
+      <<: *runtime-environment
       PORT: 3002
       DATABASE_URL: ${ORDERS_DATABASE_URL}
-      DRIVERS_SERVICE_URL: http://drivers-service:3003
+      SHIPMENT_CODES_KEY: ${SHIPMENT_CODES_KEY}
+      MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN:-}
+      MERCADOPAGO_WEBHOOK_SECRET: ${MERCADOPAGO_WEBHOOK_SECRET:-}
+      PUBLIC_API_URL: ${PUBLIC_API_URL}
+      WEB_URL: ${WEB_URL}
     depends_on:
       postgres-orders: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/health']
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
+    healthcheck: { test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/ready'], interval: 10s, timeout: 8s, retries: 20, start_period: 30s }
   drivers-service:
     <<: *service-common
     build:
       context: .
       dockerfile: infrastructure/docker/service.Dockerfile
-      args:
-        SERVICE_NAME: '@delivereats/drivers-service'
+      args: { SERVICE_NAME: '@delivereats/drivers-service' }
     environment:
-      SERVICE_NAME: '@delivereats/drivers-service'
+      <<: *runtime-environment
       PORT: 3003
       DATABASE_URL: ${DRIVERS_DATABASE_URL}
-      ORDERS_SERVICE_URL: http://orders-service:3002
+      REDIS_URL: ${REDIS_URL}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      COMMUNICATION_GRACE_MINUTES: ${COMMUNICATION_GRACE_MINUTES:-15}
     depends_on:
       postgres-drivers: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       redis: { condition: service_healthy }
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3003/health']
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
+    healthcheck: { test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3003/ready'], interval: 10s, timeout: 8s, retries: 20, start_period: 30s }
   notifications-service:
     <<: *service-common
     build:
       context: .
       dockerfile: infrastructure/docker/service.Dockerfile
-      args:
-        SERVICE_NAME: '@delivereats/notifications-service'
+      args: { SERVICE_NAME: '@delivereats/notifications-service' }
     environment:
-      SERVICE_NAME: '@delivereats/notifications-service'
+      <<: *runtime-environment
       PORT: 3004
       DATABASE_URL: ${NOTIFICATIONS_DATABASE_URL}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
     depends_on:
       postgres-notifications: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
-      redis: { condition: service_healthy }
-      mailpit: { condition: service_started }
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3004/health']
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
+    healthcheck: { test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3004/ready'], interval: 10s, timeout: 8s, retries: 20, start_period: 30s }
   web:
-    build:
-      context: .
-      dockerfile: infrastructure/docker/web.Dockerfile
-    env_file: .env
+    <<: *service-common
+    build: { context: ., dockerfile: infrastructure/docker/web.Dockerfile }
     environment:
+      NODE_ENV: production
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      WEB_URL: ${WEB_URL}
       USERS_SERVICE_URL: http://users-service:3001
       ORDERS_SERVICE_URL: http://orders-service:3002
       DRIVERS_SERVICE_URL: http://drivers-service:3003
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3004
-    ports: ['3000:3000']
+    ports: ['127.0.0.1:3000:3000']
     depends_on:
       users-service: { condition: service_healthy }
       orders-service: { condition: service_healthy }
       drivers-service: { condition: service_healthy }
       notifications-service: { condition: service_healthy }
-    networks: [delivereats]
-
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.28-alpine
     ports: ['80:80']
-    volumes:
-      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    volumes: ['./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro']
     depends_on:
       web: { condition: service_started }
       users-service: { condition: service_healthy }
@@ -223,11 +217,10 @@ services:
       drivers-service: { condition: service_healthy }
       notifications-service: { condition: service_healthy }
     networks: [delivereats]
+    restart: unless-stopped
 
 networks:
-  delivereats:
-    driver: bridge
-
+  delivereats: { driver: bridge }
 volumes:
   users-data:
   orders-data:
@@ -235,3 +228,4 @@ volumes:
   notifications-data:
   redis-data:
   rabbitmq-data:
+  private-files:

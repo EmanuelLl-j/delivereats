@@ -6,20 +6,20 @@ import { Button, colors, Field, ScreenHeader } from '@/components/ui';
 import { api } from '@/lib/api';
 
 export default function ForgotPasswordScreen() {
-  const [email, setEmail] = useState('cliente@delivereats.local');
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   async function submit() {
     setLoading(true);
     try {
-      const result = await api<{ message: string; developmentToken?: string }>(
+      const result = await api<{ message: string }>(
         '/users/auth/forgot-password',
         { method: 'POST', body: JSON.stringify({ email }) },
       );
       Alert.alert(
         'Solicitud enviada',
-        `${result.message}${result.developmentToken ? `\n\nToken de desarrollo: ${result.developmentToken}` : ''}`,
+        result.message,
       );
-      router.back();
+      router.push('/reset-password');
     } catch (error) {
       Alert.alert('Error', error instanceof Error ? error.message : 'Inténtalo nuevamente');
     } finally {

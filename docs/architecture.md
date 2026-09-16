@@ -45,7 +45,7 @@ sequenceDiagram
   C->>O: POST /cart/checkout
   O->>DB: Releer catálogo y cupón
   O->>DB: Transacción Order + SubOrders + Items + PaymentIntent
-  O-->>C: Total server-side + instrucciones sandbox
+  O-->>C: Total server-side + medio configurado
   O->>MQ: order.created (persistent/confirm)
   O-->>W: merchant.order.updated (Socket.IO)
   MQ->>N: entrega con ACK
@@ -55,7 +55,7 @@ sequenceDiagram
 
 ## Pago y confirmación
 
-`PAYMENTS_MODE=mock` genera un `PaymentIntent` explícitamente sandbox. Solo un admin puede llamar `mock-decision`; al aprobar, el backend cambia pago y pedido a `CONFIRMED` y emite `payment.approved`/`order.confirmed`. En Mercado Pago, el frontend nunca aprueba: el webhook dispara una consulta al SDK oficial y se persiste el estado retornado por el proveedor.
+No hay aprobación de pagos simulada. CASH se confirma como cobrado al registrar la entrega. Yape/Plin manual requieren cuenta, QR, referencia única y evidencia; un administrador distinto del cliente revisa el comprobante. Mercado Pago utiliza el SDK oficial, verifica la firma del webhook, consulta el pago y contrasta importe, moneda, referencia y cuenta de producción. Volver a la pantalla de éxito no aprueba nada. Un pago tardío tras cancelación abre conciliación/reembolso, no reactiva la entrega. Sin credenciales el método externo permanece deshabilitado.
 
 ## Asignación concurrente
 
@@ -86,7 +86,7 @@ sequenceDiagram
 
 ## Tracking
 
-La app solicita permiso y, durante una asignación aceptada, envía coordenadas aproximadamente cada cinco segundos. Repartidores valida que el driver esté `BUSY` y sea dueño de la asignación. La última posición se guarda como `driver:{id}:location` con TTL en Redis; una muestra se persiste en PostgreSQL como máximo una vez por minuto. Si Redis no está disponible, el store degrada a memoria y el health check lo evidencia.
+La app solicita permiso y, mientras permanece en primer plano, envía coordenadas aproximadamente cada cinco segundos durante disponibilidad y entregas. Repartidores verifica la sesión, aprobación y propiedad de la asignación. Redis conserva la última muestra con TTL; las muestras desordenadas o demasiado antiguas se rechazan y el cliente ve cuándo la ubicación está desactualizada. No existe GPS inventado ni fallback del servidor a memoria cuando Redis falla. El buffer móvil retiene como máximo 120 muestras recientes en memoria y se descarta al cerrar sesión/desactivar seguimiento. Una muestra se persiste en PostgreSQL como máximo una vez por minuto. El seguimiento con pantalla bloqueada no está certificado.
 
 ```mermaid
 sequenceDiagram
@@ -107,7 +107,7 @@ sequenceDiagram
 
 ## Eventos y resiliencia
 
-El exchange topic `delivereats.events` y las colas son durables; los mensajes se publican persistentes con confirmación. Notificaciones hace ACK solo después de persistir/entregar. Los fallos se reencolan mediante una retry queue con TTL de cinco segundos y dead-letter exchange; tras tres intentos van a DLQ. `eventId` único hace idempotente el consumo. Esto reduce pérdida y duplicación, sin prometer garantía absoluta ante todos los fallos posibles.
+Los cambios operativos de pedidos, códigos de envío, ofertas, chat y llamadas guardan un evento cifrado en la misma transacción. El publisher lee la outbox persistente y usa confirmaciones RabbitMQ. El exchange topic `delivereats.events` y sus colas son durables. El consumidor confirma en el canal que recibió el mensaje, incluso durante reconexiones. Los fallos pasan por una retry queue de cinco segundos; tras tres reintentos van a DLQ. La idempotencia se identifica por evento y canal. El push operativo se activa únicamente con Firebase y un dispositivo registrado en una sesión vigente; no duplica la bandeja in-app. SMTP/FCM pueden repetir una entrega si el proveedor acepta y luego falla la confirmación en la base: no se promete exactly-once ni recepción física del push.
 
 ```mermaid
 flowchart LR
@@ -123,10 +123,16 @@ flowchart LR
 
 ## Seguridad y observabilidad
 
-- JWT de 15 minutos y refresh de siete días almacenado únicamente como hash BCrypt.
+- JWT de 15 minutos con versión revocable y refresh de siete días, reclamado una sola vez y almacenado como SHA-256 + BCrypt para evitar truncamiento.
 - Cookies HttpOnly para web y SecureStore para mobile.
 - RBAC en guards y middleware web; autorización de propiedad dentro de servicios.
 - Helmet, CORS configurable, throttling y `ValidationPipe` con whitelist/transform.
 - Errores homogéneos con código y correlation ID; no se registran passwords, tokens ni API keys.
 - Las llamadas internas exigen `INTERNAL_SERVICE_SECRET` y propagan correlación.
 - Health checks verifican base y, cuando aplica, Redis/RabbitMQ.
+
+## Archivos, comunicaciones y privacidad
+
+Usuarios almacena metadatos y autoriza archivos privados por propietario y propósito. S3 es obligatorio en producción; local utiliza archivos reales y firmas temporales, nunca URLs públicas de documentos. Chat y llamadas exigen participación en el pedido y una ventana operativa vigente. LiveKit emite tokens de micrófono, no de cámara o grabación; los cierres fallidos permanecen pendientes de reintento.
+
+La exportación de datos consulta los cuatro dominios y falla si alguno no responde, sin presentar un archivo parcial como completo. Omite contraseñas, tokens, claves de archivos y códigos de entrega. La baja revisada desactiva acceso, comercios, disponibilidad y dispositivos, pero conserva historial operacional: no equivale a borrado físico ni certifica cumplimiento legal. Pedidos/asignaciones activos bloquean esa baja. Debe definirse y aprobarse una política de retención y supresión antes del lanzamiento público.

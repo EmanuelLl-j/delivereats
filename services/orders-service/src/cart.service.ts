@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   OrderStatus,
   PaymentMethod,
@@ -7,7 +7,8 @@ import {
   Prisma,
 } from './generated/prisma';
 import { calculateCheckout, generateOrderNumber } from '@delivereats/shared-utils';
-import { EventPublisher } from '@delivereats/backend-kit';
+import { EventPublisher, internalRequest, requireLegal } from '@delivereats/backend-kit';
+import { merchantPublicSelect, publicMerchant } from './public-views';
 import { AddCartItemDto, CheckoutDto, UpdateCartItemDto } from './dto';
 import { OrdersGateway } from './orders.gateway';
 import { PaymentService } from './payments/payment.service';
@@ -30,7 +31,7 @@ export class CartService {
       include: {
         items: {
           orderBy: { createdAt: 'asc' },
-          include: { product: true, merchant: true },
+          include: { product: true, merchant: { select: merchantPublicSelect } },
         },
       },
     });
@@ -39,11 +40,12 @@ export class CartService {
   async add(customerId: string, dto: AddCartItemDto) {
     const product = await this.prisma.product.findUnique({
       where: { id: dto.productId },
-      include: { merchant: true },
+      include: { merchant: true, category: true },
     });
     if (
       !product ||
       !product.isAvailable ||
+      !product.category.isActive ||
       !product.merchant.isActive ||
       !product.merchant.isOpen
     ) {
@@ -105,18 +107,36 @@ export class CartService {
     return this.get(customerId);
   }
 
+  async quote(customerId: string, dto: CheckoutDto) {
+    const cart = await this.get(customerId);
+    if (!cart.items.length) throw new BadRequestException('El carrito está vacío');
+    const itemTotals = cart.items.map(item => Number(item.product.price) * item.quantity);
+    const subtotal = itemTotals.reduce((sum, value) => sum + value, 0);
+    let promotion;
+    if (dto.promoCode) {
+      const value = await this.prisma.promotion.findUnique({ where: { code: dto.promoCode } });
+      const now = new Date();
+      if (!value?.isActive || value.startsAt > now || value.expiresAt < now || subtotal < Number(value.minimumAmount) || (value.usageLimit != null && value.usageCount >= value.usageLimit)) throw new BadRequestException('El cupón no es válido para este pedido');
+      promotion = { type: value.type, value: Number(value.value), maximumDiscount: value.maximumDiscount == null ? null : Number(value.maximumDiscount) };
+    }
+    return calculateCheckout({ itemTotals, promotion });
+  }
+
   async checkout(customerId: string, dto: CheckoutDto, correlationId?: string) {
+    await requireLegal(customerId, ['GENERAL_TERMS', 'PRIVACY_POLICY']);
+    await this.payments.assertConfigured(dto.paymentMethod);
+    const address = await internalRequest<{ id: string; address: string; latitude: string; longitude: string }>('users', `/internal/users/${customerId}/addresses/${dto.deliveryAddressId}`);
     const created = await this.prisma.$transaction(
       async (tx) => {
         const cart = await tx.cart.findUnique({
           where: { customerId },
-          include: { items: { include: { product: true, merchant: true } } },
+          include: { items: { include: { product: { include: { category: true } }, merchant: true } } },
         });
         if (!cart?.items.length)
           throw new BadRequestException({ code: 'CART_EMPTY', message: 'El carrito está vacío' });
         if (
           cart.items.some(
-            (item) => !item.product.isAvailable || !item.merchant.isActive || !item.merchant.isOpen,
+            (item) => !item.product.isAvailable || !item.product.category.isActive || !item.merchant.isActive || !item.merchant.isOpen,
           )
         ) {
           throw new BadRequestException({
@@ -161,6 +181,7 @@ export class CartService {
           };
         }
         const totals = calculateCheckout({ itemTotals, promotion });
+        if (dto.expectedTotal != null && Math.abs(dto.expectedTotal - totals.total) > 0.001) throw new ConflictException('El precio cambió. Revisa el total actualizado antes de confirmar.');
         const year = new Date().getUTCFullYear();
         const sequence = await tx.orderSequence.upsert({
           where: { year },
@@ -176,9 +197,9 @@ export class CartService {
             orderNumber: generateOrderNumber(sequence.value),
             customerId,
             deliveryAddressId: dto.deliveryAddressId,
-            deliveryAddress: dto.deliveryAddress,
-            deliveryLatitude: dto.deliveryLatitude,
-            deliveryLongitude: dto.deliveryLongitude,
+            deliveryAddress: address.address,
+            deliveryLatitude: address.latitude,
+            deliveryLongitude: address.longitude,
             status: cash ? OrderStatus.CONFIRMED : OrderStatus.PENDING,
             subtotal: totals.subtotal,
             deliveryFee: totals.deliveryFee,
@@ -219,11 +240,10 @@ export class CartService {
               ? {
                   payments: {
                     create: {
-                      provider: PaymentProvider.MOCK,
+                      provider: PaymentProvider.CASH,
                       method: PaymentMethod.CASH,
                       amount: totals.total,
                       status: PaymentStatus.PENDING,
-                      sandboxPayload: { cashOnDelivery: true },
                     },
                   },
                 }
@@ -237,35 +257,22 @@ export class CartService {
             where: { id: promotion.id },
             data: { usageCount: { increment: 1 } },
           });
+        await this.events.enqueue(tx, 'order.created', { orderId: order.id, orderNumber: order.orderNumber, customerId, merchantIds: order.subOrders.map(item => item.merchantId), total: order.total.toString() }, correlationId);
+        if (cash) await this.events.enqueue(tx, 'order.confirmed', { orderId: order.id, customerId }, correlationId);
         return order;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
 
-    const payment =
-      created.paymentMethod === PaymentMethod.CASH
-        ? created.payments[0]
-        : await this.payments.createForOrder(created.id, correlationId);
+    // A provider outage must not conceal an already committed order or create duplicates on retry.
+    let payment: unknown = created.payments[0];
+    let paymentPending = false;
+    if (created.paymentMethod !== PaymentMethod.CASH) {
+      try { payment = await this.payments.createForOrder(created.id, correlationId); }
+      catch { paymentPending = true; }
+    }
     const ownerIds = created.subOrders.map((subOrder) => subOrder.merchant.ownerUserId);
     this.gateway.emitOrder(created, ownerIds);
-    await this.events.publish(
-      'order.created',
-      {
-        orderId: created.id,
-        orderNumber: created.orderNumber,
-        customerId: created.customerId,
-        merchantIds: created.subOrders.map((item) => item.merchantId),
-        total: created.total.toString(),
-      },
-      correlationId,
-    );
-    if (created.paymentMethod === PaymentMethod.CASH) {
-      await this.events.publish(
-        'order.confirmed',
-        { orderId: created.id, customerId },
-        correlationId,
-      );
-    }
-    return { order: created, payment };
+    return { order: { ...created, subOrders: created.subOrders.map(sub => ({ ...sub, merchant: publicMerchant(sub.merchant) })) }, payment, paymentPending };
   }
 }

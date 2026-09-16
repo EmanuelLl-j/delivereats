@@ -14,15 +14,17 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { ConfigurablePushProvider, SmtpEmailProvider } from './providers';
 import { PrismaService } from './prisma.service';
+import { InternalPrivacyController } from './privacy.controller';
 
 @Module({
   imports: [
     JwtModule.register({ global: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
   ],
-  controllers: [NotificationsController, HealthController],
+  controllers: [NotificationsController, HealthController, InternalPrivacyController],
   providers: [
     PrismaService,
+    { provide: 'EVENT_OUTBOX', useExisting: PrismaService },
     NotificationsService,
     SmtpEmailProvider,
     ConfigurablePushProvider,

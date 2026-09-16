@@ -8,6 +8,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model EventOutbox {
+  id            String    @id @db.Uuid
+  name          String
+  payload       String
+  correlationId String
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([publishedAt, createdAt])
+  @@map("event_outbox")
+}
+
 enum DriverStatus {
   OFFLINE
   AVAILABLE
@@ -45,13 +59,17 @@ model DriverProfile {
   vehiclePlate     String?
   licenseNumber    String?
   status           DriverStatus       @default(OFFLINE)
-  rating           Decimal            @default(5) @db.Decimal(3, 2)
+  rating           Decimal            @default(0) @db.Decimal(3, 2)
   completedOrders  Int                @default(0)
   currentLatitude  Decimal?           @db.Decimal(10, 7)
   currentLongitude Decimal?           @db.Decimal(10, 7)
   lastLocationAt   DateTime?
   version          Int                @default(0)
   approvedAt       DateTime?
+  applicationStatus DriverApplicationStatus @default(PENDING_REVIEW)
+  documents        Json?
+  reviewReason     String?
+  reviewedBy       String?            @db.Uuid
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   assignments      DriverAssignment[]
@@ -87,12 +105,75 @@ model AssignmentRequest {
   destination       Json
   estimatedEarnings Decimal                 @db.Decimal(10, 2)
   pickupCount       Int
+  vehicleTypes      Json?
   status            AssignmentRequestStatus @default(SEARCHING)
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
 
   @@index([status, updatedAt])
   @@map("assignment_requests")
+}
+
+enum DriverApplicationStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Conversation {
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @unique @db.Uuid
+  createdAt    DateTime @default(now())
+  messages     Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @db.Uuid
+  senderUserId   String   @db.Uuid
+  recipientUserId String  @db.Uuid
+  clientMessageId String  @db.Uuid
+  type           String   @default("TEXT")
+  body           String
+  createdAt      DateTime @default(now())
+  readAt         DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+
+  @@unique([senderUserId, clientMessageId])
+  @@index([conversationId, createdAt])
+  @@index([recipientUserId, readAt])
+  @@map("messages")
+}
+
+model CallSession {
+  id             String   @id @default(uuid()) @db.Uuid
+  orderId        String   @db.Uuid
+  callerUserId   String   @db.Uuid
+  calleeUserId   String   @db.Uuid
+  roomName       String   @unique
+  status         String   @default("RINGING")
+  startedAt      DateTime @default(now())
+  endedAt        DateTime?
+  providerClosedAt DateTime?
+
+  @@index([orderId, status])
+  @@map("call_sessions")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String
+  entity      String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
 }
 
 model LocationSample {

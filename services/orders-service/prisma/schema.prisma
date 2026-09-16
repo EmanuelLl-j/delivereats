@@ -8,6 +8,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model EventOutbox {
+  id            String    @id @db.Uuid
+  name          String
+  payload       String
+  correlationId String
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([publishedAt, createdAt])
+  @@map("event_outbox")
+}
+
 enum MerchantCategory {
   RESTAURANT
   SUPERMARKET
@@ -16,6 +30,7 @@ enum MerchantCategory {
 }
 
 enum OrderStatus {
+  REQUIRES_REVIEW
   PENDING
   CONFIRMED
   SEARCHING_DRIVER
@@ -29,6 +44,8 @@ enum OrderStatus {
 }
 
 enum PaymentMethod {
+  YAPE_MANUAL
+  PLIN_MANUAL
   MERCADO_PAGO
   YAPE
   PLIN
@@ -37,6 +54,7 @@ enum PaymentMethod {
 }
 
 enum PaymentStatus {
+  PAYMENT_PENDING_VERIFICATION
   PENDING
   APPROVED
   REJECTED
@@ -52,6 +70,8 @@ enum PromotionType {
 }
 
 enum PaymentProvider {
+  MANUAL
+  CASH
   MOCK
   MERCADO_PAGO
 }
@@ -75,6 +95,12 @@ model Merchant {
   deliveryEstimateMax Int
   isOpen              Boolean          @default(true)
   isActive            Boolean          @default(false)
+  applicationStatus   ApplicationStatus @default(PENDING)
+  applicationDocuments Json?
+  businessHours       Json?
+  reviewReason        String?
+  reviewedBy          String?           @db.Uuid
+  reviewedAt          DateTime?
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
   categories          Category[]
@@ -151,7 +177,11 @@ model Order {
   id                    String         @id @default(uuid()) @db.Uuid
   orderNumber           String         @unique
   customerId            String         @db.Uuid
-  deliveryAddressId     String         @db.Uuid
+  deliveryAddressId     String?        @db.Uuid
+  type                  OrderType      @default(MARKETPLACE)
+  version               Int            @default(0)
+  completedAt           DateTime?
+  cancelledAt           DateTime?
   deliveryAddress       String
   deliveryLatitude      Decimal        @db.Decimal(10, 7)
   deliveryLongitude     Decimal        @db.Decimal(10, 7)
@@ -171,6 +201,8 @@ model Order {
   payments              PaymentIntent[]
   ratings               Rating[]
   statusHistory         OrderStatusHistory[]
+  shipment              PersonalShipmentDetails?
+  refunds               Refund[]
 
   @@index([customerId, createdAt])
   @@index([status, createdAt])
@@ -186,6 +218,10 @@ model SubOrder {
   subtotal       Decimal     @db.Decimal(10, 2)
   pickupSequence Int
   pickedUpAt     DateTime?
+  acceptedAt     DateTime?
+  preparingAt    DateTime?
+  readyAt        DateTime?
+  rejectionReason String?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   order          Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -241,6 +277,11 @@ model PaymentIntent {
   currency          String          @default("PEN")
   externalId        String?
   providerReference String?
+  operationCode     String?
+  evidenceFileId    String?         @db.Uuid
+  reviewReason      String?
+  reviewedBy        String?         @db.Uuid
+  providerPaymentId String?         @unique
   sandboxPayload    Json?
   verifiedAt        DateTime?
   createdAt         DateTime        @default(now())
@@ -250,6 +291,182 @@ model PaymentIntent {
   @@index([orderId, status])
   @@index([externalId])
   @@map("payment_intents")
+}
+
+enum OrderType {
+  MARKETPLACE
+  PERSONAL_SHIPMENT
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum ItemPolicyStatus {
+  ALLOWED
+  RESTRICTED
+  PROHIBITED
+}
+
+enum ShipmentReviewStatus {
+  NOT_REQUIRED
+  REQUIRES_REVIEW
+  APPROVED
+  REJECTED
+  INVESTIGATION
+}
+
+model ItemPolicy {
+  id          String           @id @default(uuid()) @db.Uuid
+  category    String           @unique
+  description String
+  status      ItemPolicyStatus
+  version     Int              @default(1)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  revisions   ItemPolicyRevision[]
+
+  @@map("item_policies")
+}
+
+model ItemPolicyRevision {
+  id          String           @id @default(uuid()) @db.Uuid
+  policyId    String           @db.Uuid
+  version     Int
+  description String
+  status      ItemPolicyStatus
+  isActive    Boolean
+  actorUserId String           @db.Uuid
+  createdAt   DateTime         @default(now())
+  policy      ItemPolicy       @relation(fields: [policyId], references: [id])
+
+  @@unique([policyId, version])
+  @@map("item_policy_revisions")
+}
+
+model LogisticsConfig {
+  vehicleType   String  @id
+  maxWeightKg   Decimal @db.Decimal(8, 2)
+  maxLengthCm   Decimal @db.Decimal(8, 2)
+  maxWidthCm    Decimal @db.Decimal(8, 2)
+  maxHeightCm   Decimal @db.Decimal(8, 2)
+  baseFee       Decimal @db.Decimal(10, 2)
+  perKmFee      Decimal @db.Decimal(10, 2)
+  perKgFee      Decimal @db.Decimal(10, 2)
+  perLiterFee   Decimal @db.Decimal(10, 4)
+  serviceFee    Decimal @db.Decimal(10, 2)
+  fragileFee    Decimal @db.Decimal(10, 2)
+  maxDistanceKm Decimal @db.Decimal(8, 2)
+  cashAllowed   Boolean @default(true)
+  isActive      Boolean @default(true)
+  version       Int     @default(1)
+  updatedAt     DateTime @updatedAt
+
+  @@map("logistics_configs")
+}
+
+model ShipmentQuote {
+  id          String   @id @default(uuid()) @db.Uuid
+  customerId  String   @db.Uuid
+  input       Json
+  breakdown   Json
+  fingerprint String
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([customerId, expiresAt])
+  @@map("shipment_quotes")
+}
+
+model PersonalShipmentDetails {
+  orderId                  String   @id @db.Uuid
+  quoteId                  String   @unique @db.Uuid
+  pickupAddress            String
+  pickupReference          String?
+  pickupLatitude           Decimal  @db.Decimal(10, 7)
+  pickupLongitude          Decimal  @db.Decimal(10, 7)
+  dropoffAddress           String
+  dropoffReference         String?
+  dropoffLatitude          Decimal  @db.Decimal(10, 7)
+  dropoffLongitude         Decimal  @db.Decimal(10, 7)
+  recipientName            String
+  packageCategory          String
+  contentDescription       String
+  weightKg                 Decimal  @db.Decimal(8, 2)
+  lengthCm                 Decimal  @db.Decimal(8, 2)
+  widthCm                  Decimal  @db.Decimal(8, 2)
+  heightCm                 Decimal  @db.Decimal(8, 2)
+  declaredValue            Decimal  @db.Decimal(10, 2)
+  fragile                  Boolean
+  packageImageUrl          String?
+  vehicleType              String
+  pickupVerificationCode   String
+  deliveryVerificationCode String
+  verificationAttempts     Int      @default(0)
+  verificationLockedUntil  DateTime?
+  pickedUpAt               DateTime?
+  deliveredAt              DateTime?
+  pickupEvidenceFileId      String?  @db.Uuid
+  deliveryEvidenceFileId    String?  @db.Uuid
+  restrictionStatus        ItemPolicyStatus
+  reviewStatus             ShipmentReviewStatus
+  reviewReason             String?
+  reviewedBy               String?  @db.Uuid
+  reviewedAt               DateTime?
+  declarationEvidence      Json
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  order                    Order    @relation(fields: [orderId], references: [id])
+
+  @@index([reviewStatus, createdAt])
+  @@map("personal_shipment_details")
+}
+
+model PaymentConfiguration {
+  method       String   @id
+  enabled      Boolean  @default(false)
+  accountLabel String?
+  instructions String?
+  qrImageUrl   String?
+  updatedAt    DateTime @updatedAt
+
+  @@map("payment_configurations")
+}
+
+model Refund {
+  id                String   @id @default(uuid()) @db.Uuid
+  orderId           String   @db.Uuid
+  paymentIntentId   String   @db.Uuid
+  amount            Decimal  @db.Decimal(10, 2)
+  reason            String
+  status            String   @default("REQUESTED")
+  requestedBy       String   @db.Uuid
+  reviewedBy        String?  @db.Uuid
+  providerReference String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  order             Order    @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, status])
+  @@map("refunds")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String
+  entity      String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
 }
 
 model OrderStatusHistory {

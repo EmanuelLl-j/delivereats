@@ -20,7 +20,7 @@ export default function RegisterScreen() {
     try {
       const session = await api<Session>('/users/auth/register', {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, phone: form.phone || undefined, role: 'CUSTOMER' }),
       });
       await saveSession(session);
       Alert.alert('Cuenta creada', 'Ya puedes explorar DeliverEats.');
@@ -76,7 +76,7 @@ export default function RegisterScreen() {
             onChangeText={(value) => setForm({ ...form, password: value })}
             secureTextEntry
           />
-          <Text style={styles.help}>Mínimo 8 caracteres, mayúscula, número y símbolo.</Text>
+          <Text style={styles.help}>Mínimo 12 caracteres, mayúscula, minúscula, número y símbolo.</Text>
           <Button label="Crear mi cuenta" onPress={submit} loading={loading} variant="amber" />
           <Button label="Volver" onPress={() => router.back()} variant="ghost" />
         </ScrollView>

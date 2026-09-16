@@ -8,6 +8,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model EventOutbox {
+  id            String    @id @db.Uuid
+  name          String
+  payload       String
+  correlationId String
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([publishedAt, createdAt])
+  @@map("event_outbox")
+}
+
 enum NotificationType {
   ORDER
   PAYMENT
@@ -56,6 +70,7 @@ model DeviceToken {
   token     String   @unique
   platform  String
   active    Boolean  @default(true)
+  authVersion Int   @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, UserRoundCheck } from 'lucide-react';
 import { useState } from 'react';
 import { ErrorPanel, LoadingPanel, PageHeading, StatusBadge } from '@/components/ui';
+import { apiRequest, json } from '@/lib/api';
 
 type User = {
   id: string;
@@ -21,22 +22,11 @@ export default function UsersPage() {
   const queryClient = useQueryClient();
   const users = useQuery({
     queryKey: ['admin-users', search],
-    queryFn: async () => {
-      const response = await fetch(
-        `/api/backend/users/users${search ? `?search=${encodeURIComponent(search)}` : ''}`,
-      );
-      if (!response.ok) throw new Error('Request failed');
-      return response.json() as Promise<User[]>;
-    },
+    queryFn: () => apiRequest<User[]>(`/api/backend/users/users${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   });
   const status = useMutation({
     mutationFn: async (user: User) => {
-      const response = await fetch(`/api/backend/users/users/${user.id}/status`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ status: user.status === 'SUSPENDED' ? 'ACTIVE' : 'SUSPENDED' }),
-      });
-      if (!response.ok) throw new Error('No se pudo actualizar');
+      return apiRequest(`/api/backend/users/users/${user.id}/status`, json('PATCH', { status: user.status === 'SUSPENDED' ? 'ACTIVE' : 'SUSPENDED' }));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-users'] }),
   });
@@ -57,10 +47,11 @@ export default function UsersPage() {
           className="h-12 min-w-0 flex-1 bg-transparent text-sm outline-none"
         />
       </div>
+      {status.isError && <ErrorPanel message={status.error.message} />}
       {users.isLoading ? (
         <LoadingPanel />
       ) : users.isError ? (
-        <ErrorPanel />
+        <ErrorPanel message={users.error.message} />
       ) : (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
@@ -100,7 +91,7 @@ export default function UsersPage() {
                     </td>
                     <td className="px-5 py-4 text-right">
                       <button
-                        disabled={status.isPending}
+                        disabled={status.isPending || user.status === 'DELETED'}
                         onClick={() => status.mutate(user)}
                         className={`rounded-lg px-3 py-2 text-xs font-extrabold ${user.status === 'SUSPENDED' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}
                       >

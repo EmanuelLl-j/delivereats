@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Headers, HttpCode, Ip, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser, Public } from '@delivereats/backend-kit';
 import type { JwtPayload } from '@delivereats/shared-types';
 import { AuthService } from './auth.service';
@@ -11,12 +12,22 @@ import {
   RegisterDto,
   ResetPasswordDto,
   UpdateProfileDto,
+  VerificationDto,
 } from './dto';
 
 @ApiTags('Autenticación')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
+
+  @Public()
+  @Post('verify-email')
+  verifyEmail(@Body() dto: VerificationDto) { return this.auth.verifyEmail(dto.token); }
+
+  @ApiBearerAuth()
+  @Post('resend-verification')
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
+  resendVerification(@CurrentUser() user: JwtPayload) { return this.auth.sendVerification(user.sub); }
 
   @Public()
   @Post('register')
@@ -65,6 +76,7 @@ export class AuthController {
   @Public()
   @HttpCode(200)
   @Post('forgot-password')
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
   forgotPassword(
     @Body() dto: ForgotPasswordDto,
     @Headers('x-correlation-id') correlationId?: string,

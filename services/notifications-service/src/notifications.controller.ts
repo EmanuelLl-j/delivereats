@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Roles } from '@delivereats/backend-kit';
 import { UserRole, type JwtPayload } from '@delivereats/shared-types';
@@ -33,7 +33,13 @@ export class NotificationsController {
 
   @Post('devices')
   device(@CurrentUser() user: JwtPayload, @Body() dto: RegisterDeviceDto) {
-    return this.notifications.registerDevice(user.sub, dto);
+    if (typeof user.authVersion !== 'number') throw new ForbiddenException('Inicia sesión nuevamente');
+    return this.notifications.registerDevice(user.sub, user.authVersion, dto);
+  }
+
+  @Post('devices/unregister')
+  unregister(@CurrentUser() user: JwtPayload, @Body() dto: RegisterDeviceDto) {
+    return this.notifications.unregisterDevice(user.sub, dto.token);
   }
 
   @Roles(UserRole.ADMIN)

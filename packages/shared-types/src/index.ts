@@ -12,6 +12,7 @@ export enum UserStatus {
 }
 
 export enum OrderStatus {
+  REQUIRES_REVIEW = 'REQUIRES_REVIEW',
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
   SEARCHING_DRIVER = 'SEARCHING_DRIVER',
@@ -25,6 +26,8 @@ export enum OrderStatus {
 }
 
 export enum PaymentMethod {
+  YAPE_MANUAL = 'YAPE_MANUAL',
+  PLIN_MANUAL = 'PLIN_MANUAL',
   MERCADO_PAGO = 'MERCADO_PAGO',
   YAPE = 'YAPE',
   PLIN = 'PLIN',
@@ -33,6 +36,7 @@ export enum PaymentMethod {
 }
 
 export enum PaymentStatus {
+  PAYMENT_PENDING_VERIFICATION = 'PAYMENT_PENDING_VERIFICATION',
   PENDING = 'PENDING',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
@@ -63,7 +67,13 @@ export type JwtPayload = {
   email?: string;
   iat?: number;
   exp?: number;
+  authVersion?: number;
 };
+
+export type OrderType = 'MARKETPLACE' | 'PERSONAL_SHIPMENT';
+export type LegalType = 'GENERAL_TERMS' | 'PRIVACY_POLICY' | 'SHIPPING_TERMS' | 'PROHIBITED_ITEMS_POLICY' | 'DRIVER_TERMS' | 'MERCHANT_TERMS';
+export type PublicPerson = { displayName: string; avatar: string | null };
+export type PublicDriver = PublicPerson & { rating: number; vehicleType: string; vehiclePlate: string | null };
 
 export type EventEnvelope<T = Record<string, unknown>> = {
   id: string;

@@ -1,6 +1,7 @@
 import { OrderStatus } from '@delivereats/shared-types';
 
 const transitions: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
+  [OrderStatus.REQUIRES_REVIEW]: [OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
   [OrderStatus.PENDING]: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
   [OrderStatus.CONFIRMED]: [
     OrderStatus.SEARCHING_DRIVER,

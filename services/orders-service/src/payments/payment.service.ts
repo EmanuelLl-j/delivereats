@@ -1,250 +1,153 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
-import {
-  OrderStatus,
-  PaymentMethod,
-  PaymentProvider,
-  PaymentStatus,
-  Prisma,
-} from '../generated/prisma';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { OrderStatus, PaymentProvider, PaymentStatus } from '../generated/prisma';
 import { MercadoPagoConfig, Payment, Preference } from 'mercadopago';
-import { EventPublisher } from '@delivereats/backend-kit';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { EventPublisher, requireOwnedFile } from '@delivereats/backend-kit';
 import { PrismaService } from '../prisma.service';
 
-type OrderForPayment = Prisma.OrderGetPayload<{
-  include: { subOrders: { include: { items: true; merchant: true } } };
-}>;
-
-export type PaymentIntentView = {
-  provider: PaymentProvider;
-  externalId?: string;
-  checkoutUrl?: string;
-  sandbox: boolean;
-  sandboxCode?: string;
-  qrPayload?: string;
-};
-
-export interface PaymentProviderAdapter {
-  create(order: OrderForPayment): Promise<PaymentIntentView>;
-  verify(externalId: string): Promise<PaymentStatus>;
-}
-
-class MockPaymentProvider implements PaymentProviderAdapter {
-  async create(order: OrderForPayment): Promise<PaymentIntentView> {
-    const code = `${order.paymentMethod}-SBX-${order.orderNumber}`;
-    return {
-      provider: PaymentProvider.MOCK,
-      externalId: `mock_${order.id}`,
-      sandbox: true,
-      sandboxCode: code,
-      qrPayload: `DELIVEREATS|SANDBOX|${code}|PEN|${order.total.toString()}`,
-    };
-  }
-
-  async verify(): Promise<PaymentStatus> {
-    return PaymentStatus.PENDING;
-  }
-}
-
-class MercadoPagoProviderAdapter implements PaymentProviderAdapter {
-  private readonly client: MercadoPagoConfig;
-
-  constructor(accessToken: string) {
-    this.client = new MercadoPagoConfig({ accessToken, options: { timeout: 8_000 } });
-  }
-
-  async create(order: OrderForPayment): Promise<PaymentIntentView> {
-    const response = await new Preference(this.client).create({
-      body: {
-        items: [
-          {
-            id: order.id,
-            title: `Pedido ${order.orderNumber}`,
-            quantity: 1,
-            unit_price: Number(order.total),
-            currency_id: 'PEN',
-          },
-        ],
-        external_reference: order.id,
-        notification_url: `${process.env.PUBLIC_API_URL ?? 'http://localhost/api/orders'}/payments/webhook/mercadopago`,
-        back_urls: {
-          success: `${process.env.WEB_URL ?? 'http://localhost:3000'}/pago/exito`,
-          failure: `${process.env.WEB_URL ?? 'http://localhost:3000'}/pago/error`,
-          pending: `${process.env.WEB_URL ?? 'http://localhost:3000'}/pago/pendiente`,
-        },
-        auto_return: 'approved',
-      },
-    });
-    if (!response.id)
-      throw new ServiceUnavailableException('Mercado Pago no devolvió una preferencia válida');
-    return {
-      provider: PaymentProvider.MERCADO_PAGO,
-      externalId: response.id,
-      checkoutUrl: response.init_point ?? response.sandbox_init_point,
-      sandbox: process.env.MERCADOPAGO_SANDBOX !== 'false',
-    };
-  }
-
-  async verify(externalId: string): Promise<PaymentStatus> {
-    const response = await new Payment(this.client).get({ id: externalId });
-    if (response.status === 'approved') return PaymentStatus.APPROVED;
-    if (response.status === 'rejected') return PaymentStatus.REJECTED;
-    if (response.status === 'cancelled') return PaymentStatus.CANCELLED;
-    if (response.status === 'refunded') return PaymentStatus.REFUNDED;
-    return PaymentStatus.PENDING;
-  }
+const supported = ['CASH', 'MERCADO_PAGO', 'YAPE_MANUAL', 'PLIN_MANUAL'];
+export function verifyWebhookSignature(id: string, requestId: string, signature: string, secret: string, now = Date.now()) {
+  const fields = Object.fromEntries(signature.split(',').map(part => part.trim().split('=')));
+  if (!id || !requestId || !secret || !/^\d{10,13}$/.test(fields.ts ?? '') || !/^[a-f0-9]{64}$/i.test(fields.v1 ?? '')) return false;
+  const timestamp = Number(fields.ts) * (fields.ts.length <= 10 ? 1000 : 1);
+  if (Math.abs(now - timestamp) > 5 * 60_000) return false;
+  const expected = createHmac('sha256', secret).update(`id:${id.toLowerCase()};request-id:${requestId};ts:${fields.ts};`).digest();
+  return timingSafeEqual(expected, Buffer.from(fields.v1, 'hex'));
 }
 
 @Injectable()
 export class PaymentService {
-  private readonly mock = new MockPaymentProvider();
+  constructor(private readonly prisma: PrismaService, private readonly events: EventPublisher) {}
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly events: EventPublisher,
-  ) {}
+  private client() {
+    if (!process.env.MERCADOPAGO_ACCESS_TOKEN) throw new ServiceUnavailableException('Mercado Pago no configurado');
+    return new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN, options: { timeout: 8_000 } });
+  }
+
+  async assertConfigured(method: string) {
+    if (!supported.includes(method)) throw new BadRequestException('Selecciona un medio de pago vigente');
+    const config = await this.prisma.paymentConfiguration.findUnique({ where: { method } });
+    if (!config?.enabled) throw new ServiceUnavailableException('Este medio de pago está deshabilitado');
+    if (method.endsWith('_MANUAL') && (!config.accountLabel || !config.instructions || !config.qrImageUrl)) throw new ServiceUnavailableException('Falta configurar la cuenta y QR de pago');
+    if (method === 'MERCADO_PAGO') {
+      this.client();
+      if (!process.env.MERCADOPAGO_WEBHOOK_SECRET || !process.env.PUBLIC_API_URL?.startsWith('https://') || !process.env.WEB_URL?.startsWith('https://')) throw new ServiceUnavailableException('Mercado Pago requiere webhook firmado y URLs HTTPS');
+    }
+    return config;
+  }
+
+  async methods() {
+    const configs = await this.prisma.paymentConfiguration.findMany({ where: { enabled: true } });
+    const result = [];
+    for (const config of configs) { try { await this.assertConfigured(config.method); result.push(config); } catch { /* An unconfigured provider is not offered to the customer. */ } }
+    return result;
+  }
 
   async createForOrder(orderId: string, correlationId?: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { subOrders: { include: { items: true, merchant: true } } },
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) throw new NotFoundException('Pedido no encontrado');
+    if ([OrderStatus.CANCELLED, OrderStatus.REQUIRES_REVIEW, OrderStatus.DELIVERED].includes(order.status as never)) throw new ConflictException('El pedido no admite iniciar un pago');
+    const config = await this.assertConfigured(order.paymentMethod);
+    const intent = await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${orderId}))`;
+      const existing = await tx.paymentIntent.findFirst({ where: { orderId, status: { notIn: ['CANCELLED', 'REFUNDED'] } }, orderBy: { createdAt: 'desc' } });
+      return existing ?? tx.paymentIntent.create({ data: { orderId, method: order.paymentMethod, amount: order.total, provider: order.paymentMethod === 'CASH' ? 'CASH' : order.paymentMethod === 'MERCADO_PAGO' ? 'MERCADO_PAGO' : 'MANUAL' } });
     });
-    if (!order)
-      throw new NotFoundException({ code: 'ORDER_NOT_FOUND', message: 'Pedido no encontrado' });
-
-    const adapter = this.providerFor(order.paymentMethod);
-    const view = await adapter.create(order);
-    const intent = await this.prisma.paymentIntent.create({
-      data: {
-        orderId: order.id,
-        provider: view.provider,
-        method: order.paymentMethod,
-        amount: order.total,
-        externalId: view.externalId,
-        providerReference: view.checkoutUrl,
-        sandboxPayload: view as unknown as Prisma.InputJsonValue,
-      },
-    });
-    await this.events.publish(
-      'payment.created',
-      {
-        paymentIntentId: intent.id,
-        orderId: order.id,
-        method: order.paymentMethod,
-        amount: order.total.toString(),
-      },
-      correlationId,
-    );
-    return { ...intent, client: view };
+    if (intent.provider === PaymentProvider.MERCADO_PAGO && !intent.externalId) {
+      const preference = await new Preference(this.client()).create({
+        body: { items: [{ id: order.id, title: `Pedido ${order.orderNumber}`, quantity: 1, unit_price: Number(order.total), currency_id: 'PEN' }],
+          external_reference: intent.id, notification_url: `${process.env.PUBLIC_API_URL}/payments/webhook/mercadopago`,
+          back_urls: { success: `${process.env.WEB_URL}/pago/exito`, failure: `${process.env.WEB_URL}/pago/error`, pending: `${process.env.WEB_URL}/pago/pendiente` }, auto_return: 'approved' },
+        requestOptions: { idempotencyKey: intent.id },
+      });
+      if (!preference.id || !preference.init_point) throw new ServiceUnavailableException('Mercado Pago no devolvió una preferencia válida');
+      const saved = await this.prisma.paymentIntent.update({ where: { id: intent.id }, data: { externalId: preference.id, providerReference: preference.init_point } });
+      await this.events.publish('payment.created', { paymentIntentId: saved.id, orderId, customerId: order.customerId }, correlationId);
+      return { ...saved, client: { checkoutUrl: saved.providerReference } };
+    }
+    return { ...intent, client: { checkoutUrl: intent.providerReference, accountLabel: config.accountLabel, instructions: config.instructions, qrImageUrl: config.qrImageUrl, cashOnDelivery: order.paymentMethod === 'CASH' } };
   }
 
   async get(intentId: string, userId: string, isAdmin: boolean) {
-    const intent = await this.prisma.paymentIntent.findUnique({
-      where: { id: intentId },
-      include: { order: true },
-    });
-    if (!intent)
-      throw new NotFoundException({ code: 'PAYMENT_NOT_FOUND', message: 'Pago no encontrado' });
-    if (!isAdmin && intent.order.customerId !== userId)
-      throw new ForbiddenException('No puedes consultar este pago');
+    const intent = await this.prisma.paymentIntent.findUnique({ where: { id: intentId }, include: { order: true } });
+    if (!intent) throw new NotFoundException('Pago no encontrado');
+    if (!isAdmin && intent.order.customerId !== userId) throw new ForbiddenException('No puedes consultar este pago');
     return intent;
   }
 
-  async decideMock(intentId: string, approved: boolean, correlationId?: string) {
-    if ((process.env.PAYMENTS_MODE ?? 'mock') !== 'mock') {
-      throw new ForbiddenException({
-        code: 'PAYMENT_NOT_MOCK',
-        message: 'La aprobación manual solo existe en modo mock',
-      });
-    }
-    const intent = await this.prisma.paymentIntent.findUnique({
-      where: { id: intentId },
-      include: { order: true },
+  async retryOwn(orderId: string, userId: string) {
+    if (!await this.prisma.order.findFirst({ where: { id: orderId, customerId: userId } })) throw new ForbiddenException('Pedido no disponible');
+    return this.createForOrder(orderId);
+  }
+
+  async evidence(intentId: string, customerId: string, dto: { operationCode: string; evidenceFileId: string }) {
+    await requireOwnedFile(customerId, dto.evidenceFileId, ['PAYMENT_EVIDENCE']);
+    const intent = await this.get(intentId, customerId, false);
+    if (intent.provider !== 'MANUAL' || !['PENDING', 'REJECTED'].includes(intent.status) || intent.order.status !== 'PENDING') throw new ConflictException('Este pago no admite comprobantes');
+    return this.prisma.$transaction(async tx => {
+      const operationKey = `${intent.method}:${dto.operationCode}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${operationKey}))`;
+      const duplicate = await tx.paymentIntent.findFirst({ where: { method: intent.method, operationCode: dto.operationCode, id: { not: intent.id } } });
+      if (duplicate) throw new ConflictException('El código de operación ya está registrado');
+      const claimed = await tx.paymentIntent.updateMany({ where: { id: intentId, status: intent.status }, data: { ...dto, status: 'PAYMENT_PENDING_VERIFICATION', reviewReason: null } });
+      if (!claimed.count) throw new ConflictException('El pago cambió; vuelve a cargarlo');
+      await tx.order.update({ where: { id: intent.orderId }, data: { paymentStatus: 'PAYMENT_PENDING_VERIFICATION' } });
+      await tx.auditLog.create({ data: { actorUserId: customerId, action: 'PAYMENT_EVIDENCE_SUBMITTED', entity: 'PaymentIntent', entityId: intentId } });
+      return tx.paymentIntent.findUniqueOrThrow({ where: { id: intentId } });
     });
-    if (!intent)
-      throw new NotFoundException({ code: 'PAYMENT_NOT_FOUND', message: 'Pago no encontrado' });
-    if (intent.provider !== PaymentProvider.MOCK)
-      throw new ForbiddenException('El pago no pertenece al proveedor mock');
-    return this.applyVerifiedStatus(
-      intent.id,
-      approved ? PaymentStatus.APPROVED : PaymentStatus.REJECTED,
-      correlationId,
-    );
   }
 
-  async verifyMercadoPago(externalId: string, correlationId?: string) {
-    const intent = await this.prisma.paymentIntent.findFirst({ where: { externalId } });
-    if (!intent)
-      throw new NotFoundException({ code: 'PAYMENT_NOT_FOUND', message: 'Pago no encontrado' });
-    const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
-    if (!token)
-      throw new ServiceUnavailableException('MERCADOPAGO_ACCESS_TOKEN no está configurado');
-    const status = await new MercadoPagoProviderAdapter(token).verify(externalId);
-    return this.applyVerifiedStatus(intent.id, status, correlationId);
+  async review(intentId: string, adminId: string, approved: boolean, reason: string) {
+    const intent = await this.get(intentId, adminId, true);
+    if (intent.provider !== 'MANUAL' || intent.status !== 'PAYMENT_PENDING_VERIFICATION' || !intent.operationCode || !intent.evidenceFileId) throw new ConflictException('El pago no espera verificación manual');
+    if (intent.order.customerId === adminId) throw new ForbiddenException('No puedes verificar tu propio pago');
+    return this.applyVerifiedStatus(intent.id, approved ? PaymentStatus.APPROVED : PaymentStatus.REJECTED, undefined, { adminId, reason, expected: 'PAYMENT_PENDING_VERIFICATION' });
   }
 
-  private providerFor(method: PaymentMethod): PaymentProviderAdapter {
-    if ((process.env.PAYMENTS_MODE ?? 'mock') === 'mock' || method !== PaymentMethod.MERCADO_PAGO) {
-      return this.mock;
-    }
-    const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
-    if (!token)
-      throw new ServiceUnavailableException('MERCADOPAGO_ACCESS_TOKEN no está configurado');
-    return new MercadoPagoProviderAdapter(token);
+  async verifyMercadoPago(paymentId: string, requestId: string, signature: string, correlationId?: string) {
+    if (!verifyWebhookSignature(paymentId, requestId, signature, process.env.MERCADOPAGO_WEBHOOK_SECRET ?? '')) throw new ForbiddenException('Firma de webhook inválida o vencida');
+    const payment = await new Payment(this.client()).get({ id: paymentId });
+    if (!payment.external_reference || String(payment.id) !== paymentId) throw new BadRequestException('Referencia de pago inválida');
+    const intent = await this.prisma.paymentIntent.findUnique({ where: { id: payment.external_reference }, include: { order: true } });
+    if (!intent || intent.provider !== 'MERCADO_PAGO') throw new NotFoundException('Pago no encontrado');
+    if (payment.currency_id !== 'PEN' || Math.round(Number(payment.transaction_amount) * 100) !== Math.round(Number(intent.amount) * 100)) throw new BadRequestException('Moneda o monto no coincide');
+    if (intent.providerPaymentId && intent.providerPaymentId !== paymentId) throw new ConflictException('El intento ya tiene otro pago conciliado');
+    if (process.env.NODE_ENV === 'production' && payment.live_mode !== true) throw new ForbiddenException('Pago de prueba no permitido en producción');
+    const statuses: Record<string, PaymentStatus> = { approved: 'APPROVED', rejected: 'REJECTED', cancelled: 'CANCELLED', refunded: 'REFUNDED', pending: 'PENDING', in_process: 'PENDING' };
+    const status = statuses[payment.status ?? ''];
+    if (!status) return { received: true, updated: false };
+    return this.applyVerifiedStatus(intent.id, status, correlationId, { paymentId });
   }
 
-  private async applyVerifiedStatus(
-    intentId: string,
-    status: PaymentStatus,
-    correlationId?: string,
-  ) {
-    const result = await this.prisma.$transaction(async (tx) => {
-      const intent = await tx.paymentIntent.update({
-        where: { id: intentId },
-        data: { status, verifiedAt: new Date() },
-      });
-      const order = await tx.order.findUniqueOrThrow({ where: { id: intent.orderId } });
-      const shouldConfirm =
-        status === PaymentStatus.APPROVED && order.status === OrderStatus.PENDING;
-      const updatedOrder = await tx.order.update({
-        where: { id: order.id },
-        data: {
-          paymentStatus: status,
-          ...(shouldConfirm ? { status: OrderStatus.CONFIRMED } : {}),
-        },
-      });
-      if (shouldConfirm) {
-        await tx.orderStatusHistory.create({
-          data: {
-            orderId: order.id,
-            fromStatus: OrderStatus.PENDING,
-            toStatus: OrderStatus.CONFIRMED,
-            metadata: { source: 'payment' },
-          },
-        });
+  private async applyVerifiedStatus(intentId: string, status: PaymentStatus, correlationId?: string, context: { adminId?: string; reason?: string; expected?: PaymentStatus; paymentId?: string } = {}) {
+    const result = await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${intentId}))`;
+      const current = await tx.paymentIntent.findUniqueOrThrow({ where: { id: intentId } });
+      if (context.expected && current.status !== context.expected) throw new ConflictException('El pago ya fue revisado');
+      if (current.providerPaymentId && context.paymentId && current.providerPaymentId !== context.paymentId) throw new ConflictException('Pago duplicado');
+      const order = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
+      if (current.status === status || (['APPROVED', 'PAID', 'REFUNDED'].includes(current.status) && !['REFUNDED'].includes(status))) return { intent: current, order, changed: false };
+      const intent = await tx.paymentIntent.update({ where: { id: intentId }, data: { status, verifiedAt: new Date(), reviewedBy: context.adminId, reviewReason: context.reason, providerPaymentId: context.paymentId } });
+      const shouldConfirm = status === 'APPROVED' && order.status === 'PENDING';
+      const claimed = await tx.order.updateMany({ where: { id: order.id, status: order.status, version: order.version }, data: { paymentStatus: status, version: { increment: 1 }, ...(shouldConfirm ? { status: 'CONFIRMED' } : {}) } });
+      if (!claimed.count) throw new ConflictException('El pedido cambió durante la conciliación. Reintenta el evento.');
+      const updated = await tx.order.findUniqueOrThrow({ where: { id: order.id } });
+      if (status === 'APPROVED' && order.status === 'CANCELLED' && !await tx.refund.findFirst({ where: { paymentIntentId: intentId, status: { not: 'REJECTED' } } })) {
+        await tx.refund.create({ data: { orderId: order.id, paymentIntentId: intentId, amount: current.amount, requestedBy: order.customerId, reason: 'Pago recibido después de cancelar; requiere devolución real' } });
       }
-      return { intent, order: updatedOrder };
+      if (status === 'REFUNDED' && context.paymentId) {
+        const refunds = await tx.refund.updateMany({ where: { paymentIntentId: intentId, status: { in: ['REQUESTED', 'APPROVED'] } }, data: { status: 'COMPLETED', providerReference: context.paymentId } });
+        if (!refunds.count && !await tx.refund.findFirst({ where: { paymentIntentId: intentId, status: 'COMPLETED' } })) await tx.refund.create({ data: { orderId: order.id, paymentIntentId: intentId, amount: current.amount, requestedBy: order.customerId, reason: 'Devolución total confirmada por webhook verificado de Mercado Pago', status: 'COMPLETED', providerReference: context.paymentId } });
+      }
+      if (shouldConfirm) {
+        await tx.subOrder.updateMany({ where: { orderId: order.id, status: 'PENDING' }, data: { status: 'CONFIRMED' } });
+        await tx.orderStatusHistory.create({ data: { orderId: order.id, fromStatus: 'PENDING', toStatus: 'CONFIRMED', metadata: { source: 'verified-payment' } } });
+      }
+      await tx.auditLog.create({ data: { actorUserId: context.adminId, action: 'PAYMENT_VERIFIED', entity: 'PaymentIntent', entityId: intentId, metadata: { status, reason: context.reason ?? null, providerPaymentId: context.paymentId ?? null } } });
+      await this.events.enqueue(tx, `payment.${status.toLowerCase()}`, { paymentIntentId: intentId, orderId: order.id, customerId: order.customerId }, correlationId);
+      if (shouldConfirm) await this.events.enqueue(tx, 'order.confirmed', { orderId: order.id, customerId: order.customerId }, correlationId);
+      return { intent, order: updated, changed: true };
     });
-    await this.events.publish(
-      status === PaymentStatus.APPROVED ? 'payment.approved' : 'payment.rejected',
-      {
-        paymentIntentId: result.intent.id,
-        orderId: result.order.id,
-        customerId: result.order.customerId,
-      },
-      correlationId,
-    );
-    if (status === PaymentStatus.APPROVED) {
-      await this.events.publish(
-        'order.confirmed',
-        { orderId: result.order.id, customerId: result.order.customerId },
-        correlationId,
-      );
-    }
     return result;
   }
 }

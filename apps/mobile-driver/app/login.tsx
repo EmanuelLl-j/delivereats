@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { router } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { Controller, useForm } from 'react-hook-form';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,7 +19,7 @@ export default function LoginScreen() {
     formState: { errors, isSubmitting },
   } = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { email: 'driver@delivereats.local', password: 'Demo12345!' },
+    defaultValues: { email: '', password: '' },
   });
   const submit = handleSubmit(async (values) => {
     try {
@@ -87,7 +87,9 @@ export default function LoginScreen() {
               <Button label="Ingresar" onPress={submit} loading={isSubmitting} tone="amber" />
             </View>
           </View>
-          <Text style={styles.demo}>driver@delivereats.local · Demo12345!</Text>
+          <Link href="/register" style={styles.footer}>Quiero ser repartidor</Link>
+          <Link href="/forgot-password" style={styles.footer}>Recuperar contraseña</Link>
+          <Link href="/legal" style={styles.footer}>Términos y privacidad</Link>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -127,5 +129,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-  demo: { color: '#94A3B8', textAlign: 'center', fontSize: 10, marginTop: 21 },
+  footer: { color: '#CBD5E1', textAlign: 'center', fontSize: 13, marginTop: 21 },
 });

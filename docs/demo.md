@@ -1,42 +1,18 @@
-# Guion de demostración end-to-end
+# Recorrido de aceptación con cuentas propias
 
-## Preparación
+Este guion no carga cuentas, productos, cupones ni pedidos ficticios. Para pruebas automáticas usa exclusivamente test:e2e y sus bases temporales.
 
-1. Ejecuta el inicio rápido del README y confirma que `docker compose ps` muestre servicios healthy.
-2. Abre cuatro vistas: cliente Expo, driver Expo, [portal comercio](http://localhost/comercio) y [admin](http://localhost/admin).
-3. Inicia sesión con las cuentas demo. En la app driver activa disponibilidad.
+1. Crea el administrador por CLI, revisa/publica documentos, configura políticas y tarifas. Revisa la conexión real de los servicios.
+2. Registra cliente, comercio y repartidor con datos y correos bajo tu control. Verifica los correos y acepta expresamente las versiones legales.
+3. Comercio y repartidor presentan documentos propios. Administración aprueba o rechaza con motivo. No hay aprobación automática.
+4. Comercio crea categorías y productos con fotos propias. Configura dirección, horarios y disponibilidad.
+5. Cliente guarda una dirección y agrega productos de uno o varios comercios. Comprueba cotización y método realmente disponible. No presupongas un cupón.
+6. Para CASH, el pedido queda confirmado pero el dinero aún no se considera cobrado. Para pago manual, adjunta comprobante y revisa desde administración; para Mercado Pago, espera el webhook verificado.
+7. Cada comercio acepta/prepara su subpedido y lo marca listo. La asignación comienza cuando todos están listos. Un rechazo anterior a la recogida cancela el pedido completo y solicita devolución si hay pago verificado.
+8. El repartidor aprobado activa disponibilidad con GPS vigente y acepta una oferta antes de 15 segundos. Debe recoger todos los subpedidos antes de finalizar.
+9. Cliente y repartidor comprueban chat, privacidad frente a terceros y, solo si está disponible, llamada real. No hay datos de contacto inventados.
+10. Al entregar, registra efectivo efectivamente recibido cuando corresponda. Comprueba pedido, historial, ganancias devengadas y notificaciones. Ganancia no significa liquidación bancaria.
+11. Para envío personal, valida límites, descripción, valor y declaraciones; un artículo prohibido se bloquea y uno restringido queda en revisión sin cobro ni asignación. Usa el código de la fase correcta para recogida y entrega.
+12. Verifica soporte, solicitudes de privacidad, cierre de sesión y revocación en otros dispositivos.
 
-## Pedido multi-negocio
-
-1. En cliente abre Botica San Gabriel y agrega `Kit de Medicamentos Básico` (S/ 42).
-2. Abre Fresh Market Huamanga y agrega `Compra de Víveres - Pack Familiar` (S/ 45).
-3. Comprueba que el carrito tenga dos establecimientos.
-4. En checkout usa la dirección demo, cupón `PDGP10` y Yape. El servidor debe responder subtotal S/ 87, delivery S/ 5, service fee S/ 4.35, descuento S/ 8.70 y total S/ 87.65.
-5. Confirma. El cliente muestra el PaymentIntent sandbox; el comercio recibe la orden sin recargar.
-
-## Pago, preparación y driver
-
-1. En Admin → Pagos encuentra el intent pendiente y pulsa **Aprobar**. El backend marca pago `APPROVED` y pedido `CONFIRMED`.
-2. En comercio pulsa **Aceptar y buscar driver**. El sistema ordena drivers por distancia y reserva uno atómicamente.
-3. La app driver muestra ganancia, destino, número de recojos y contador de 15 segundos. Acepta la oferta.
-4. En comercio inicia preparación y marca listo.
-5. En driver abre la entrega y confirma primero Botica, luego Fresh Market. Con todos los recojos confirmados comienza la ruta al cliente.
-
-## Tracking y cierre
-
-1. La app driver envía GPS cada cinco segundos. En cliente abre Tracking: Socket.IO actualiza el mapa; REST consulta cada cinco segundos como respaldo.
-2. Driver pulsa **Confirmar entrega y cobro**. El pedido cambia a `DELIVERED` y el driver vuelve `AVAILABLE`.
-3. Cliente abre el pedido y registra una calificación.
-4. Admin → Pedidos muestra pago, subpedidos, driver y estado final; Admin → Notificaciones muestra los mensajes consumidos.
-
-## Resiliencia RabbitMQ
-
-1. Detén solo el consumidor: `docker compose stop notifications-service`.
-2. Crea otro pedido. Checkout y portal comercio deben seguir funcionando porque publicar el evento no depende de una respuesta del consumidor.
-3. En RabbitMQ Management verifica mensajes `Ready` en `notifications.queue`.
-4. Reinicia: `docker compose start notifications-service`.
-5. La cola vuelve a cero y las notificaciones aparecen. Si un mensaje falla tres veces, inspecciónalo en `notifications.dlq`.
-
-## Pago rechazado
-
-Crea un checkout Yape adicional y en Admin → Pagos pulsa **Rechazar**. El PaymentIntent pasa a `REJECTED`, el pedido no avanza a búsqueda de driver y el evento `payment.rejected` queda trazado.
+No ejecutes recorridos que muevan dinero o impliquen entregas reales sin coordinación con quienes participan. Las pruebas externas deben documentarse como pendientes hasta completarlas.

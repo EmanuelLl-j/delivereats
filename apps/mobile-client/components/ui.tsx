@@ -37,6 +37,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
       disabled={disabled || loading}
       onPress={onPress}
       style={({ pressed }) => [
@@ -72,6 +73,7 @@ export function Field({
     <View style={{ gap: 7 }}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
+        accessibilityLabel={label}
         placeholderTextColor="#94A3B8"
         style={[styles.input, error && { borderColor: colors.red }]}
         {...props}

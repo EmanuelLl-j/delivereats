@@ -1,49 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OrderStatus, PaymentProvider, PaymentStatus } from '../generated/prisma';
-import { PaymentService } from './payment.service';
+import { describe, expect, it, vi } from 'vitest';
+import { createHmac, randomBytes } from 'node:crypto';
+import { PaymentService, verifyWebhookSignature } from './payment.service';
 
-describe('PaymentService mock provider', () => {
-  const intent = { id: 'payment-1', orderId: 'order-1', provider: PaymentProvider.MOCK };
-  const order = { id: 'order-1', customerId: 'customer-1', status: OrderStatus.PENDING };
-  let events: { publish: ReturnType<typeof vi.fn> };
-  let service: PaymentService;
-
-  beforeEach(() => {
-    process.env.PAYMENTS_MODE = 'mock';
-    events = { publish: vi.fn(async () => true) };
-    const tx = {
-      paymentIntent: { update: vi.fn(async () => ({ ...intent, status: PaymentStatus.APPROVED })) },
-      order: {
-        findUniqueOrThrow: vi.fn(async () => order),
-        update: vi.fn(
-          async ({ data }: { data: { status?: OrderStatus; paymentStatus: PaymentStatus } }) => ({
-            ...order,
-            ...data,
-          }),
-        ),
-      },
-      orderStatusHistory: { create: vi.fn(async () => ({})) },
-    };
-    const prisma = {
-      paymentIntent: { findUnique: vi.fn(async () => ({ ...intent, order })) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
-    };
-    service = new PaymentService(prisma as never, events as never);
+describe('payment security', () => {
+  const secret = randomBytes(32).toString('hex');
+  const now = Date.now();
+  const ts = String(Math.floor(now / 1000));
+  const signature = createHmac('sha256', secret).update(`id:123;request-id:req-1;ts:${ts};`).digest('hex');
+  it('validates the provider manifest in constant-time', () => expect(verifyWebhookSignature('123', 'req-1', `ts=${ts},v1=${signature}`, secret, now)).toBe(true));
+  it('rejects forged signatures', () => expect(verifyWebhookSignature('123', 'req-1', `ts=${ts},v1=${'0'.repeat(64)}`, secret, now)).toBe(false));
+  it('rejects expired signed requests', () => expect(verifyWebhookSignature('123', 'req-1', `ts=${ts},v1=${signature}`, secret, now + 360_000)).toBe(false));
+  it('binds the resource and request ID', () => {
+    expect(verifyWebhookSignature('124', 'req-1', `ts=${ts},v1=${signature}`, secret, now)).toBe(false);
+    expect(verifyWebhookSignature('123', 'req-2', `ts=${ts},v1=${signature}`, secret, now)).toBe(false);
   });
-
-  it('allows an admin decision only through the mock provider and confirms the order', async () => {
-    const result = await service.decideMock(intent.id, true, 'test-correlation');
-    expect(result.order.status).toBe(OrderStatus.CONFIRMED);
-    expect(result.order.paymentStatus).toBe(PaymentStatus.APPROVED);
-    expect(events.publish).toHaveBeenCalledWith(
-      'payment.approved',
-      expect.objectContaining({ orderId: order.id }),
-      'test-correlation',
-    );
-    expect(events.publish).toHaveBeenCalledWith(
-      'order.confirmed',
-      expect.objectContaining({ orderId: order.id }),
-      'test-correlation',
-    );
+  it('rejects missing secrets and malformed input', () => {
+    expect(verifyWebhookSignature('123', 'req-1', 'broken', secret, now)).toBe(false);
+    expect(verifyWebhookSignature('123', 'req-1', `ts=${ts},v1=${signature}`, '', now)).toBe(false);
+  });
+  it('never falls back to a mock or legacy method', async () => {
+    const service = new PaymentService({ paymentConfiguration: { findUnique: vi.fn(async () => null) } } as never, {} as never);
+    for (const method of ['MOCK', 'YAPE', 'PLIN', 'CARD']) await expect(service.assertConfigured(method)).rejects.toThrow('vigente');
+    await expect(service.assertConfigured('MERCADO_PAGO')).rejects.toThrow('deshabilitado');
   });
 });

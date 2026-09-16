@@ -1,48 +1,39 @@
-# Pruebas y verificación
+# Pruebas y evidencia
 
-## Suite rápida
+## Comandos
 
-```bash
+```powershell
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
-```
-
-La suite cubre autenticación/registro, hash de refresh, RBAC, totales, transiciones, mapeo del consumer RabbitMQ y lógica compartida. Las apps Expo se exportan también para web para detectar rutas e imports específicos de plataforma.
-
-## E2E con Docker
-
-```bash
-docker compose up -d --build
-pnpm db:seed
-E2E_BASE_URL=http://localhost pnpm test:e2e
-```
-
-En PowerShell:
-
-```powershell
-$env:E2E_BASE_URL='http://localhost'
+pnpm test:migrations
+pnpm test:restore
+pnpm test:concurrency
 pnpm test:e2e
 ```
 
-El test inicia sesión como cliente, limpia el carrito, agrega productos de dos comercios, aplica `PDGP10`, crea el PaymentIntent Yape sandbox y verifica 2 subpedidos y el total S/ 87.65.
+Prerrequisitos de integración: .env local preparado y los cuatro PostgreSQL más RabbitMQ de Compose en ejecución. Los servicios normales de aplicación no son necesarios para E2E. Compila los servicios antes de ejecutar la suite directamente con node.
 
-## Concurrencia de drivers
+- Unitarias: autenticación, RBAC, checkout, pagos y firmas, límites/políticas de envíos, ubicación caducada y configuración/archivos privados.
+- Migraciones: cuatro bases limpias y cuatro actualizaciones desde el esquema anterior, con registros centinela conservados. Las ocho bases son temporales.
+- Concurrencia: 48 pedidos simultáneos sobre tres repartidores y comprobación de unicidad. Utiliza una base recién creada; no reutiliza drivers_db.
+- Restauración: `test:restore` usa la última copia completa de backups (o el nombre indicado como argumento), restaura en cuatro bases nuevas y las retira al finalizar; nunca restaura sobre las bases normales.
+- E2E: inicia los cuatro servicios reales en puertos efímeros, cuatro bases exclusivas, un vhost RabbitMQ y un contenedor Redis. Usa un receptor SMTP de prueba local y el proveedor SMTP real. Comprueba flujos HTTP completos sin tocar el sistema operativo normal.
+- Build: compila servicios y Next.js; exporta las apps a web. No equivale a APK ni prueba en un dispositivo.
 
-Usa una base PostgreSQL exclusiva; la prueba crea sus propios datos y no debe apuntar a una base compartida.
+Los registros se guardan en .test-artifacts/, ignorado por Git. isolation.json especifica los recursos temporales y si su limpieza terminó. Si una prueba falla, no se considera validado su flujo. No mostrar ni guardar credenciales en capturas o informes.
 
-```powershell
-$env:DRIVERS_TEST_DATABASE_URL='postgresql://delivereats:development-only-change-me-database@localhost:5435/drivers_db?schema=concurrency_test'
-pnpm --filter @delivereats/drivers-service test
-```
+## Estado externo
 
-El escenario dispara ofertas concurrentes sobre el mismo conjunto de drivers y afirma que ningún driver tenga más de una asignación `OFFERED`/`ACCEPTED` activa. La reserva usa estado + versión dentro de una transacción serializable.
+Firebase Android, audio LiveKit entre dos dispositivos, S3 remoto, SMTP del dominio y Mercado Pago de producción: **pendiente de credenciales externas**. Las comprobaciones de ausencia de configuración son pruebas negativas, no pruebas exitosas del proveedor remoto.
 
-## Resiliencia
+## Aceptación manual pendiente
 
-La demostración manual verificable está descrita en [demo.md](demo.md). RabbitMQ conserva mensajes mientras notifications-service está detenido y el consumer los procesa al reiniciar. Las colas retry y DLQ pueden inspeccionarse en el puerto 15672.
+Comprueba pantallas en móvil físico (permisos, red intermitente, pantalla apagada, micrófono, subir fotos), navegación del panel en anchos pequeños y grandes, y el recorrido de docs/demo.md. El seguimiento actual es de primer plano: no certificar segundo plano por observar solo un teléfono visible.
 
-## Criterio de auditoría
+Para resiliencia, usa exclusivamente el entorno aislado: detener su consumidor y verificar recuperación desde outbox/cola, vencimiento de oferta sin duplicados, reconexión GPS y doble clic. No detener servicios de un entorno con entregas reales para ejecutar una prueba.
 
-Antes de entregar una versión ejecuta `pnpm verify`, `docker compose config`, revisa `docker compose ps`, consulta los cuatro `/health`, ejecuta E2E y confirma que `git grep` no encuentre credenciales reales.
+## Producción
+
+/health es liveness. /ready comprueba dependencias. Un resultado configurado o alcanzable para un proveedor no demuestra entrega a un teléfono ni movimiento de dinero. Ejecuta check:production sobre tu servidor y realiza transacciones controladas con evidencias. No declarar una devolución completada sin confirmación verificable del proveedor o referencia/comprobante del pago manual.

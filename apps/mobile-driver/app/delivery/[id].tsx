@@ -1,271 +1,50 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Navigation, PackageCheck } from 'lucide-react-native';
-import { useEffect } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, colors, Header } from '@/components/ui';
+import { Button, colors, Field, Header } from '@/components/ui';
 import { RouteMap } from '@/components/route-map';
 import { api } from '@/lib/api';
-
-type SubOrder = {
-  id: string;
-  status: string;
-  pickedUpAt?: string;
-  pickupSequence: number;
-  merchant: { name: string; address: string; latitude: string; longitude: string };
-  items: Array<{ id: string; productName: string; quantity: number }>;
-};
-type Order = {
-  id: string;
-  orderNumber: string;
-  status: string;
-  deliveryAddress: string;
-  deliveryLatitude: string;
-  deliveryLongitude: string;
-  subOrders: SubOrder[];
-};
-
+import { uploadAsset } from '@/lib/upload';
+type SubOrder = { id: string; status: string; pickedUpAt?: string; merchant: { name: string; address: string; latitude: string; longitude: string }; items: Array<{ id: string; productName: string; quantity: number }> };
+type Shipment = { pickupAddress: string; pickupReference?: string; pickupLatitude: string; pickupLongitude: string; dropoffReference?: string; contentDescription: string; recipientName: string; weightKg: string; fragile: boolean; pickedUpAt?: string };
+type Order = { id: string; type: string; orderNumber: string; status: string; paymentMethod: string; total: string; deliveryAddress: string; deliveryLatitude: string; deliveryLongitude: string; shipment?: Shipment; subOrders: SubOrder[] };
 export default function DeliveryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const client = useQueryClient();
-  const order = useQuery({
-    queryKey: ['assigned-order', id],
-    queryFn: () => api<Order>(`/drivers/drivers/me/assignments/${id}/order`),
-    refetchInterval: 5_000,
-  });
-  const pickup = useMutation({
-    mutationFn: (subOrderId: string) =>
-      api(`/drivers/drivers/me/assignments/${id}/pickups/${subOrderId}`, {
-        method: 'POST',
-        body: '{}',
-      }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['assigned-order', id] }),
-    onError: (error) => Alert.alert('No se pudo confirmar', error.message),
-  });
-  const status = useMutation({
-    mutationFn: (value: string) =>
-      api(`/drivers/drivers/me/assignments/${id}/status`, {
-        method: 'POST',
-        body: JSON.stringify({ status: value }),
-      }),
-    onSuccess: (_, value) => {
-      client.invalidateQueries({ queryKey: ['assigned-order', id] });
-      if (value === 'DELIVERED') {
-        Alert.alert('Entrega completada', 'Volviste a estar disponible.');
-        router.replace('/(tabs)/home');
-      }
-    },
-    onError: (error) => Alert.alert('No se pudo avanzar', error.message),
-  });
-  useEffect(() => {
-    let subscription: Location.LocationSubscription | undefined;
-    void (async () => {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== 'granted') {
-        Alert.alert('GPS requerido', 'Activa la ubicación para continuar con la entrega.');
-        return;
-      }
-      subscription = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, timeInterval: 5_000, distanceInterval: 5 },
-        (position) => {
-          if (!order.data?.id) return;
-          void api('/drivers/drivers/me/location', {
-            method: 'POST',
-            body: JSON.stringify({
-              orderId: order.data.id,
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              speed: position.coords.speed ?? 0,
-              timestamp: new Date(position.timestamp).toISOString(),
-            }),
-          }).catch(() => undefined);
-        },
-      );
-    })();
-    return () => subscription?.remove();
-  }, [order.data?.id]);
+  const cache = useQueryClient();
+  const [code, setCode] = useState('');
+  const [evidence, setEvidence] = useState('');
+  const [message, setMessage] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const order = useQuery({ queryKey: ['assigned-order', id], queryFn: () => api<Order>('/drivers/drivers/me/assignments/' + id + '/order'), refetchInterval: 5000 });
   const data = order.data;
-  const pickups = data?.subOrders ?? [];
-  const allPicked = pickups.length > 0 && pickups.every((item) => item.pickedUpAt);
-  const destination = {
-    latitude: Number(data?.deliveryLatitude ?? -13.1603),
-    longitude: Number(data?.deliveryLongitude ?? -74.2257),
-  };
-  const points = pickups.map((item) => ({
-    id: item.id,
-    name: item.merchant.name,
-    latitude: Number(item.merchant.latitude),
-    longitude: Number(item.merchant.longitude),
-    pickedUp: Boolean(item.pickedUpAt),
-  }));
-  return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.top}>
-        <Pressable onPress={() => router.back()} style={styles.back}>
-          <ArrowLeft size={20} color={colors.navy} />
-        </Pressable>
-        <View>
-          <Text style={styles.kicker}>ENTREGA ACTIVA</Text>
-          <Text style={styles.topTitle}>{data?.orderNumber ?? 'Cargando pedido'}</Text>
-        </View>
-      </View>
-      <RouteMap points={points} destination={destination} />
-      <ScrollView style={styles.sheet} contentContainerStyle={styles.sheetContent}>
-        <View style={styles.handle} />
-        <Header
-          eyebrow="RUTA COORDINADA"
-          title={data?.status.replaceAll('_', ' ') ?? 'Preparando ruta'}
-          subtitle={`${pickups.length} punto(s) de recojo antes de llegar al cliente.`}
-        />
-        {pickups.map((item, index) => (
-          <View key={item.id} style={styles.stop}>
-            <View style={[styles.sequence, item.pickedUpAt && { backgroundColor: colors.green }]}>
-              {item.pickedUpAt ? (
-                <CheckCircle2 size={17} color={colors.white} />
-              ) : (
-                <Text style={styles.sequenceText}>{index + 1}</Text>
-              )}
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.stopName}>{item.merchant.name}</Text>
-              <Text style={styles.stopAddress}>{item.merchant.address}</Text>
-              {item.items.map((product) => (
-                <Text key={product.id} style={styles.item}>
-                  {product.quantity}× {product.productName}
-                </Text>
-              ))}
-            </View>
-            {!item.pickedUpAt && (
-              <Pressable
-                disabled={
-                  !['READY_FOR_PICKUP', 'PICKING_UP'].includes(data?.status ?? '') ||
-                  pickup.isPending
-                }
-                onPress={() => pickup.mutate(item.id)}
-                style={styles.confirm}
-              >
-                <PackageCheck size={17} color={colors.navy} />
-              </Pressable>
-            )}
-          </View>
-        ))}
-        <View style={styles.destination}>
-          <Navigation size={20} color={colors.amber} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.stopName}>Destino del cliente</Text>
-            <Text style={styles.stopAddress}>{data?.deliveryAddress}</Text>
-          </View>
-        </View>
-        {allPicked && data?.status === 'PICKING_UP' && (
-          <Button
-            label="Iniciar ruta al cliente"
-            onPress={() => status.mutate('ON_THE_WAY')}
-            loading={status.isPending}
-            tone="amber"
-          />
-        )}
-        {data?.status === 'ON_THE_WAY' && (
-          <Button
-            label="Confirmar entrega y cobro"
-            onPress={() => status.mutate('DELIVERED')}
-            loading={status.isPending}
-            tone="amber"
-          />
-        )}{' '}
-        {!['READY_FOR_PICKUP', 'PICKING_UP', 'ON_THE_WAY'].includes(data?.status ?? '') && (
-          <Text style={styles.wait}>
-            Espera a que los comercios marquen el pedido como listo. Esta pantalla se actualiza
-            automáticamente.
-          </Text>
-        )}
-      </ScrollView>
-    </SafeAreaView>
-  );
+  const phase = data?.status === 'ON_THE_WAY' ? 'DELIVERY' : 'PICKUP';
+  const conversation = useQuery({ queryKey: ['delivery-participant', data?.id], queryFn: () => api<{ counterpart: { displayName: string }; call?: { status: string } }>('/drivers/communications/orders/' + data!.id), enabled: !!data?.id && !['CANCELLED', 'DELIVERED'].includes(data.status), refetchInterval: 5000, retry: false });
+  async function reload() { await cache.invalidateQueries({ queryKey: ['assigned-order', id] }); await cache.invalidateQueries({ queryKey: ['driver-profile'] }); await cache.invalidateQueries({ queryKey: ['driver-earnings'] }); }
+  const pickup = useMutation({ mutationFn: (subId: string) => api('/drivers/drivers/me/assignments/' + id + '/pickups/' + subId, { method: 'POST', body: '{}' }), onSuccess: reload, onError: error => setMessage(error.message) });
+  const complete = useMutation({ mutationFn: () => data?.shipment ? api('/drivers/drivers/me/assignments/' + id + '/verify', { method: 'POST', body: JSON.stringify({ phase, code, evidenceFileId: evidence || undefined }) }) : api('/drivers/drivers/me/assignments/' + id + '/status', { method: 'POST', body: JSON.stringify({ status: 'DELIVERED' }) }), onSuccess: async () => { setCode(''); setEvidence(''); setMessage('Etapa confirmada.'); await reload(); if (phase === 'DELIVERY') router.replace('/(tabs)/home'); }, onError: error => setMessage(error.message) });
+  async function photo(camera: boolean) { setUploading(true); try { const result = await uploadAsset(phase === 'PICKUP' ? 'PICKUP_EVIDENCE' : 'DELIVERY_EVIDENCE', camera); if (result) setEvidence(result.id); } catch (error) { setMessage(error instanceof Error ? error.message : 'No se pudo adjuntar'); } finally { setUploading(false); } }
+  const points = data?.shipment ? [{ id: data.id, name: 'Recogida del paquete', latitude: Number(data.shipment.pickupLatitude), longitude: Number(data.shipment.pickupLongitude), pickedUp: !!data.shipment.pickedUpAt }] : (data?.subOrders ?? []).map(item => ({ id: item.id, name: item.merchant.name, latitude: Number(item.merchant.latitude), longitude: Number(item.merchant.longitude), pickedUp: !!item.pickedUpAt }));
+  return <SafeAreaView style={{ flex: 1, backgroundColor: colors.canvas }}><ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
+    <Button label="Volver a mi jornada" tone="ghost" onPress={() => router.replace('/(tabs)/home')} />
+    <Header eyebrow="Entrega asignada" title={data?.orderNumber ?? 'Cargando…'} subtitle={data?.status.replaceAll('_', ' ') ?? 'Consultando el pedido'} />
+    {order.isError && <Text accessibilityRole="alert" style={{ color: colors.red }}>{order.error.message}</Text>}
+    {data && <RouteMap points={points} destination={{ latitude: Number(data.deliveryLatitude), longitude: Number(data.deliveryLongitude) }} />}
+    <Text style={{ color: colors.muted, fontSize: 12 }}>Las líneas conectan puntos de entrega, no representan indicaciones viales.</Text>
+    {data && !['CANCELLED', 'DELIVERED'].includes(data.status) && <Button label={conversation.data?.call?.status === 'RINGING' ? 'Llamada pendiente · abrir chat' : 'Chat y llamada con ' + (conversation.data?.counterpart.displayName ?? 'el cliente')} onPress={() => router.push({ pathname: '/chat/[id]', params: { id: data.id } })} />}
+    {data?.shipment && <View style={{ padding: 20, backgroundColor: 'white', borderRadius: 20, gap: 10 }}><Text style={{ fontWeight: '800', fontSize: 18 }}>Recogida del paquete</Text><Text>{data.shipment.pickupAddress}</Text><Text>{data.shipment.pickupReference}</Text><Text>{data.shipment.contentDescription} · {data.shipment.weightKg} kg{data.shipment.fragile ? ' · FRÁGIL' : ''}</Text><Text>Recibe: {data.shipment.recipientName}</Text></View>}
+    {data?.subOrders.map((item, index) => <View key={item.id} style={{ padding: 20, backgroundColor: 'white', borderRadius: 20, gap: 10 }}><Text style={{ fontWeight: '800', fontSize: 18 }}>{index + 1}. {item.merchant.name}</Text><Text>{item.merchant.address}</Text>{item.items.map(product => <Text key={product.id}>{product.quantity} × {product.productName}</Text>)}<Text>{item.pickedUpAt ? 'Recogido' : item.status.replaceAll('_', ' ')}</Text>{!item.pickedUpAt && <Button label="Confirmar recogida" tone="amber" disabled={!['ASSIGNED', 'PICKING_UP'].includes(data.status) || item.status !== 'READY_FOR_PICKUP'} loading={pickup.isPending} onPress={() => pickup.mutate(item.id)} />}</View>)}
+    {data && <View style={{ padding: 20, backgroundColor: colors.navy, borderRadius: 20, gap: 8 }}><Text style={{ fontWeight: '800', color: 'white', fontSize: 18 }}>Destino</Text><Text style={{ color: '#cbd5e1' }}>{data.deliveryAddress}</Text>{data.shipment?.dropoffReference && <Text style={{ color: '#cbd5e1' }}>{data.shipment.dropoffReference}</Text>}<Text style={{ color: colors.amber, fontWeight: '800' }}>{data.paymentMethod === 'CASH' ? 'Cobrar al entregar: S/ ' + Number(data.total).toFixed(2) : 'Pago electrónico: no cobrar nuevamente'}</Text></View>}
+    {data?.shipment && ['ASSIGNED', 'ON_THE_WAY'].includes(data.status) && <>
+      <Text style={{ fontWeight: '800', fontSize: 18 }}>Verificar {phase === 'PICKUP' ? 'recogida' : 'entrega'}</Text><Text style={{ color: colors.muted }}>Solicita el código de 6 dígitos cuando hayas verificado físicamente el paquete. El servidor valida la fase y limita los intentos.</Text>
+      <Field label="Código de verificación" value={code} onChangeText={setCode} keyboardType="number-pad" maxLength={6} secureTextEntry />
+      <Button label={evidence ? 'Evidencia adjunta · tomar otra' : 'Tomar foto de evidencia'} tone="ghost" loading={uploading} onPress={() => photo(true)} />
+      <Button label="Adjuntar foto desde archivos" tone="ghost" loading={uploading} onPress={() => photo(false)} />
+      <Button label={'Confirmar ' + (phase === 'PICKUP' ? 'recogida' : 'entrega y cobro, si corresponde')} tone="amber" disabled={!/^\d{6}$/.test(code)} loading={complete.isPending} onPress={() => complete.mutate()} />
+    </>}
+    {!data?.shipment && data?.status === 'ON_THE_WAY' && <Button label={data.paymentMethod === 'CASH' ? 'Confirmar entrega y efectivo recibido' : 'Confirmar entrega al cliente'} tone="amber" loading={complete.isPending} onPress={() => complete.mutate()} />}
+    {data && <Button label="Reportar incidencia" tone="ghost" onPress={() => router.push({ pathname: '/account', params: { mode: 'support', orderId: data.id } })} />}
+    {!!message && <Text accessibilityRole="alert" style={{ color: colors.navy }}>{message}</Text>}
+  </ScrollView></SafeAreaView>;
 }
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.canvas },
-  top: {
-    height: 75,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 17,
-    backgroundColor: colors.white,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  back: {
-    width: 41,
-    height: 41,
-    borderRadius: 13,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  kicker: { color: '#C87800', fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
-  topTitle: { color: colors.navy, fontSize: 14, fontWeight: '900', marginTop: 3 },
-  sheet: {
-    flex: 1,
-    marginTop: -20,
-    backgroundColor: colors.canvas,
-    borderTopLeftRadius: 25,
-    borderTopRightRadius: 25,
-  },
-  sheetContent: { padding: 19, paddingBottom: 34, gap: 11 },
-  handle: {
-    width: 42,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#CBD5E1',
-    alignSelf: 'center',
-    marginBottom: 7,
-  },
-  stop: {
-    flexDirection: 'row',
-    gap: 11,
-    alignItems: 'flex-start',
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.white,
-    padding: 14,
-  },
-  sequence: {
-    width: 31,
-    height: 31,
-    borderRadius: 10,
-    backgroundColor: colors.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sequenceText: { color: colors.navy, fontSize: 11, fontWeight: '900' },
-  stopName: { color: colors.navy, fontSize: 12, fontWeight: '900' },
-  stopAddress: { color: colors.muted, fontSize: 9, lineHeight: 14, marginTop: 4 },
-  item: { color: '#475569', fontSize: 9, fontWeight: '700', marginTop: 4 },
-  confirm: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: colors.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  destination: {
-    flexDirection: 'row',
-    gap: 11,
-    borderRadius: 17,
-    backgroundColor: colors.navy,
-    padding: 15,
-  },
-  wait: {
-    color: colors.muted,
-    fontSize: 10,
-    lineHeight: 16,
-    textAlign: 'center',
-    borderRadius: 13,
-    backgroundColor: '#EAF0F6',
-    padding: 13,
-  },
-});

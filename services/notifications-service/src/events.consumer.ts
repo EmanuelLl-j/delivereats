@@ -15,9 +15,14 @@ type NotificationInput = {
 };
 
 const titles: Record<string, { title: string; message: string; type: NotificationType }> = {
+  'chat.message': { title: 'Nuevo mensaje de entrega', message: 'Abre el chat del pedido para leer el mensaje.', type: NotificationType.ORDER },
+  'call.ringing': { title: 'Llamada de entrega', message: 'Abre el chat del pedido para responder si la llamada sigue vigente.', type: NotificationType.ORDER },
+  'driver.accepted': { title: 'Entrega aceptada', message: 'Consulta los puntos de recogida de tu entrega.', type: NotificationType.DRIVER },
+  'order.searching_driver': { title: 'Buscando repartidor', message: 'La asignación está en curso. Puedes consultar el estado del pedido.', type: NotificationType.ORDER },
+  'order.requires_review': { title: 'Envío en revisión', message: 'La descripción del envío requiere revisión administrativa antes de continuar.', type: NotificationType.ORDER },
   'order.created': {
     title: 'Pedido creado',
-    message: 'Recibimos tu pedido y estamos validando el pago.',
+    message: 'Recibimos tu solicitud. Consulta el pedido para conocer su estado y forma de pago.',
     type: NotificationType.ORDER,
   },
   'order.confirmed': {
@@ -52,7 +57,7 @@ const titles: Record<string, { title: string; message: string; type: Notificatio
   },
   'order.delivered': {
     title: 'Pedido entregado',
-    message: '¡Buen provecho! Ya puedes calificar la entrega.',
+    message: 'La entrega ha finalizado. Ya puedes calificarla.',
     type: NotificationType.ORDER,
   },
   'order.cancelled': {
@@ -121,6 +126,7 @@ export class EventsConsumer implements OnModuleInit, OnModuleDestroy {
   private channel?: ConfirmChannel;
   private reconnectTimer?: NodeJS.Timeout;
   private connecting = false;
+  private stopped = false;
 
   constructor(private readonly notifications: NotificationsService) {}
 
@@ -133,18 +139,21 @@ export class EventsConsumer implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     await this.channel?.close().catch(() => undefined);
     await this.connection?.close().catch(() => undefined);
   }
 
   private async connect(): Promise<void> {
-    if (this.connecting || this.channel || process.env.RABBITMQ_ENABLED === 'false') return;
+    if (this.stopped || this.connecting || this.channel || process.env.RABBITMQ_ENABLED === 'false') return;
     this.connecting = true;
     try {
-      const connection = await amqp.connect(
-        process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5672',
-      );
+      if (!process.env.RABBITMQ_URL) throw new Error('RabbitMQ URL not configured');
+      const connection = await amqp.connect(process.env.RABBITMQ_URL, { timeout: 4_000 });
+      this.connection = connection;
+      connection.on('error', () => this.disconnected(connection));
+      connection.on('close', () => this.disconnected(connection));
       const channel = await connection.createConfirmChannel();
       const eventsExchange = 'delivereats.events';
       const retryExchange = 'delivereats.notifications.retry';
@@ -172,60 +181,66 @@ export class EventsConsumer implements OnModuleInit, OnModuleDestroy {
       await channel.bindQueue(retryQueue, retryExchange, 'retry');
       await channel.bindQueue(deadQueue, deadLetterExchange, '#');
       await channel.prefetch(10);
-      await channel.consume(queue, (message) => void this.handle(message), { noAck: false });
-      connection.on('close', () => this.disconnected());
-      connection.on('error', () => this.disconnected());
       this.connection = connection;
       this.channel = channel;
+      channel.on('error', () => this.disconnected(connection));
+      channel.on('close', () => this.disconnected(connection));
+      await channel.consume(queue, (message) => void this.handle(message, channel).catch(() => this.disconnected(connection)), { noAck: false });
       this.logger.log('Consumidor RabbitMQ listo con retry y DLQ');
-    } catch (error) {
-      this.logger.warn(`RabbitMQ no disponible; se reintentará la conexión: ${String(error)}`);
+    } catch {
+      this.logger.warn('RabbitMQ no disponible; se reintentará la conexión');
+      if (this.connection) this.disconnected(this.connection);
       this.scheduleReconnect();
     } finally {
       this.connecting = false;
     }
   }
 
-  private async handle(message: ConsumeMessage | null): Promise<void> {
-    if (!message || !this.channel) return;
+  private async handle(message: ConsumeMessage | null, channel: ConfirmChannel): Promise<void> {
+    if (!message) throw new Error('Consumer cancelled');
     try {
       const event = JSON.parse(message.content.toString('utf8')) as EventEnvelope<
         Record<string, unknown>
       >;
       const input = notificationFromEvent(event);
-      if (input) await this.notifications.createAndDeliver({ ...input, eventId: event.id });
-      this.channel.ack(message);
-    } catch (error) {
+      if (input) {
+        await this.notifications.createAndDeliver({ ...input, eventId: event.id });
+        if (event.name !== 'notification.requested') await this.notifications.pushDomainEvent({ ...input, eventId: event.id });
+      }
+      channel.ack(message);
+    } catch {
       const retries = Number(message.properties.headers?.['x-retry-count'] ?? 0);
       const headers = { ...message.properties.headers, 'x-retry-count': retries + 1 };
       if (retries < 3) {
-        this.channel.publish('delivereats.notifications.retry', 'retry', message.content, {
+        channel.publish('delivereats.notifications.retry', 'retry', message.content, {
           persistent: true,
           contentType: message.properties.contentType,
           messageId: message.properties.messageId,
           headers,
         });
       } else {
-        this.channel.publish('delivereats.dlx', 'notifications.dead', message.content, {
+        channel.publish('delivereats.dlx', 'notifications.dead', message.content, {
           persistent: true,
           contentType: message.properties.contentType,
           messageId: message.properties.messageId,
-          headers: { ...headers, 'x-error': String(error).slice(0, 500) },
+          headers: { ...headers, 'x-error': 'DELIVERY_FAILED' },
         });
       }
-      await this.channel.waitForConfirms();
-      this.channel.ack(message);
+      await channel.waitForConfirms();
+      channel.ack(message);
     }
   }
 
-  private disconnected(): void {
+  private disconnected(connection: ChannelModel): void {
+    if (this.connection !== connection) return;
     this.channel = undefined;
     this.connection = undefined;
+    void connection.close().catch(() => undefined);
     this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) return;
+    if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.connect();

@@ -8,6 +8,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model EventOutbox {
+  id            String    @id @db.Uuid
+  name          String
+  payload       String
+  correlationId String
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([publishedAt, createdAt])
+  @@map("event_outbox")
+}
+
 enum UserRole {
   CUSTOMER
   DRIVER
@@ -36,12 +50,127 @@ model User {
   lastLoginAt     DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+  emailVerifiedAt DateTime?
+  authVersion     Int              @default(0)
   customerProfile CustomerProfile?
   refreshSessions RefreshSession[]
   passwordResets  PasswordReset[]
 
   @@index([role, status])
   @@map("users")
+}
+
+enum LegalDocumentType {
+  GENERAL_TERMS
+  PRIVACY_POLICY
+  SHIPPING_TERMS
+  PROHIBITED_ITEMS_POLICY
+  DRIVER_TERMS
+  MERCHANT_TERMS
+}
+
+enum LegalDocumentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model LegalDocument {
+  id          String              @id @default(uuid()) @db.Uuid
+  type        LegalDocumentType
+  title       String
+  version     String
+  content     String
+  status      LegalDocumentStatus @default(DRAFT)
+  mandatory   Boolean             @default(true)
+  publishedAt DateTime?
+  effectiveAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  acceptances LegalAcceptance[]
+
+  @@unique([type, version])
+  @@index([type, status, effectiveAt])
+  @@map("legal_documents")
+}
+
+model LegalAcceptance {
+  id              String        @id @default(uuid()) @db.Uuid
+  userId          String        @db.Uuid
+  legalDocumentId String        @db.Uuid
+  version         String
+  acceptedAt      DateTime      @default(now())
+  ipAddress       String?
+  deviceInfo      String?
+  document        LegalDocument @relation(fields: [legalDocumentId], references: [id])
+
+  @@unique([userId, legalDocumentId])
+  @@map("legal_acceptances")
+}
+
+model EmailVerification {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("email_verifications")
+}
+
+model PrivacyRequest {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  type        String
+  status      String   @default("OPEN")
+  description String
+  resolution  String?
+  resolvedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, status])
+  @@map("privacy_requests")
+}
+
+model ConsentPreference {
+  userId    String   @id @db.Uuid
+  marketing Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@map("consent_preferences")
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  orderId     String?  @db.Uuid
+  type        String   @default("SUPPORT")
+  subject     String
+  description String
+  status      String   @default("OPEN")
+  response    String?
+  resolvedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, status])
+  @@map("support_tickets")
+}
+
+model FileAsset {
+  id          String   @id @default(uuid()) @db.Uuid
+  ownerUserId String   @db.Uuid
+  objectKey   String   @unique
+  purpose     String
+  mimeType    String
+  size        Int
+  createdAt   DateTime @default(now())
+
+  @@index([ownerUserId, purpose])
+  @@map("file_assets")
 }
 
 model CustomerProfile {

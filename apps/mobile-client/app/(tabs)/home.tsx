@@ -1,11 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import * as Location from 'expo-location';
 import { Link } from 'expo-router';
-import { MapPin, Search, ShoppingCart } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { Bell, MapPin, Search, ShoppingCart } from 'lucide-react-native';
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -15,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '@/components/ui';
-import { api } from '@/lib/api';
+import { api, assetUrl } from '@/lib/api';
 
 type Merchant = {
   id: string;
@@ -23,6 +22,7 @@ type Merchant = {
   description: string;
   category: string;
   rating: string;
+  logoUrl?: string; coverUrl?: string;
   deliveryEstimateMin: number;
   deliveryEstimateMax: number;
   isOpen: boolean;
@@ -31,28 +31,18 @@ const categories = [
   { key: 'RESTAURANT', label: 'Restaurantes', icon: '🍲' },
   { key: 'SUPERMARKET', label: 'Mercados', icon: '🛒' },
   { key: 'PHARMACY', label: 'Farmacias', icon: '💊' },
-  { key: 'EXPRESS', label: 'Express', icon: '⚡' },
+  { key: 'SHIPMENT', label: 'Envíos', icon: '📦' },
 ];
 
 export default function HomeScreen() {
-  const [locationLabel, setLocationLabel] = useState('Ayacucho, Huamanga');
+  const profile = useQuery({ queryKey: ['profile'], queryFn: () => api<{ firstName: string }>('/users/auth/profile') });
+  const addresses = useQuery({ queryKey: ['addresses'], queryFn: () => api<Array<{ label: string; address: string; isDefault: boolean }>>('/users/users/me/addresses') });
+  const unread = useQuery({ queryKey: ['notification-unread'], queryFn: () => api<{ count: number }>('/notifications/notifications/unread-count'), refetchInterval: 15000 });
+  const locationLabel = (addresses.data?.find(item => item.isDefault) ?? addresses.data?.[0])?.address ?? 'Elige tu dirección de entrega';
   const merchants = useQuery({
     queryKey: ['merchants'],
     queryFn: () => api<Merchant[]>('/orders/merchants'),
   });
-  useEffect(() => {
-    void (async () => {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status === 'granted') {
-        const current = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        setLocationLabel(
-          `Ayacucho · ${current.coords.latitude.toFixed(3)}, ${current.coords.longitude.toFixed(3)}`,
-        );
-      }
-    })();
-  }, []);
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
@@ -67,14 +57,15 @@ export default function HomeScreen() {
       >
         <View style={styles.top}>
           <View>
-            <Text style={styles.greeting}>BUEN DÍA, ANA</Text>
-            <View style={styles.location}>
+            <Text style={styles.greeting}>HOLA{profile.data?.firstName ? ', ' + profile.data.firstName.toLocaleUpperCase('es-PE') : ''}</Text>
+            <Link href="/addresses" asChild><Pressable style={styles.location}>
               <MapPin size={15} color={colors.amber} />
               <Text style={styles.locationText} numberOfLines={1}>
                 {locationLabel}
               </Text>
-            </View>
+            </Pressable></Link>
           </View>
+          <Link href="/(tabs)/notifications" asChild><Pressable accessibilityLabel="Notificaciones" style={styles.cart}><Bell size={20} color={colors.navy} />{!!unread.data?.count && <Text style={{ color: colors.red, fontSize: 10 }}>{unread.data.count}</Text>}</Pressable></Link>
           <Link href="/cart" asChild>
             <Pressable style={styles.cart}>
               <ShoppingCart size={20} color={colors.navy} />
@@ -96,7 +87,7 @@ export default function HomeScreen() {
           keyExtractor={(item) => item.key}
           contentContainerStyle={styles.categories}
           renderItem={({ item }) => (
-            <Link href={{ pathname: '/(tabs)/search', params: { category: item.key } }} asChild>
+            <Link href={item.key === 'SHIPMENT' ? '/shipment' : { pathname: '/(tabs)/search', params: { category: item.key } }} asChild>
               <Pressable style={styles.category}>
                 <Text style={styles.categoryIcon}>{item.icon}</Text>
                 <Text style={styles.categoryLabel}>{item.label}</Text>
@@ -104,17 +95,17 @@ export default function HomeScreen() {
             </Link>
           )}
         />
-        <View style={styles.promo}>
+        <Link href="/shipment" asChild><Pressable style={styles.promo}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.promoKicker}>CUPÓN DE BIENVENIDA</Text>
-            <Text style={styles.promoTitle}>10% menos en tu carrito multi-negocio</Text>
-            <Text style={styles.promoCode}>PDGP10</Text>
+            <Text style={styles.promoKicker}>ENVÍOS PERSONALES</Text>
+            <Text style={styles.promoTitle}>¿Un paquete por enviar? Cotiza según su tamaño y destino.</Text>
+            <Text style={styles.promoCode}>Cotizar envío →</Text>
           </View>
-          <Text style={styles.promoIcon}>✦</Text>
-        </View>
+          <Text style={styles.promoIcon}>↗</Text>
+        </Pressable></Link>
         <View style={styles.sectionRow}>
-          <Text style={styles.sectionTitle}>Cerca de ti</Text>
-          <Text style={styles.seeAll}>Ver todos</Text>
+          <Text style={styles.sectionTitle}>Comercios en Ayacucho</Text>
+          <Link href="/(tabs)/search"><Text style={styles.seeAll}>Ver todos</Text></Link>
         </View>
         {merchants.isLoading ? (
           <ActivityIndicator color={colors.amber} style={{ margin: 40 }} />
@@ -124,6 +115,7 @@ export default function HomeScreen() {
           </Text>
         ) : (
           <View style={{ gap: 13 }}>
+            {!merchants.data?.length && <Text style={{ padding: 24, color: colors.muted }}>Aún no hay comercios aprobados disponibles. Puedes consultar de nuevo más tarde.</Text>}
             {merchants.data?.map((merchant) => (
               <Link
                 key={merchant.id}
@@ -132,6 +124,7 @@ export default function HomeScreen() {
               >
                 <Pressable style={styles.merchant}>
                   <View style={styles.merchantImage}>
+                    {merchant.logoUrl ? <Image source={{ uri: assetUrl(merchant.logoUrl) }} style={{ width: 66, height: 66, borderRadius: 15 }} /> : <>
                     <Text style={{ fontSize: 31 }}>
                       {merchant.category === 'PHARMACY'
                         ? '💊'
@@ -140,7 +133,7 @@ export default function HomeScreen() {
                           : merchant.category === 'RESTAURANT'
                             ? '🍲'
                             : '⚡'}
-                    </Text>
+                    </Text></>}
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.merchantName}>{merchant.name}</Text>

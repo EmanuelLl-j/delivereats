@@ -29,9 +29,12 @@ FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY --from=build /runtime ./
+COPY --from=build --chown=node:node /runtime ./
 COPY --from=build /app/packages ./packages
 COPY infrastructure/docker/service-entrypoint.sh /usr/local/bin/service-entrypoint
+COPY --chown=node:node scripts/admin-create.mjs /app/scripts/admin-create.mjs
 RUN chmod +x /usr/local/bin/service-entrypoint
+RUN mkdir -p /app/private-files && chown node:node /app/private-files
+USER node
 
 ENTRYPOINT ["service-entrypoint"]

@@ -30,6 +30,7 @@ export class UsersService {
         message: 'Perfil de cliente no encontrado',
       });
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
       if (dto.isDefault) {
         await tx.address.updateMany({
           where: { customerId: profile.id },
@@ -129,10 +130,11 @@ export class UsersService {
     });
     if (!current)
       throw new NotFoundException({ code: 'USER_NOT_FOUND', message: 'Usuario no encontrado' });
+    if (current.status === 'DELETED') throw new ConflictException('La cuenta fue dada de baja y no puede reactivarse desde este control');
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: userId },
-        data: { status: dto.status },
+        data: { status: dto.status, authVersion: { increment: 1 } },
         select: safeSelect,
       });
       await tx.auditLog.create({

@@ -1,93 +1,20 @@
-import { PrismaClient, UserRole } from '../src/generated/prisma';
-import { hash } from 'bcrypt';
+import { LegalDocumentType, PrismaClient } from '../src/generated/prisma';
 
 const prisma = new PrismaClient();
-
-const demoUsers = [
-  {
-    id: '11111111-1111-4111-8111-111111111111',
-    firstName: 'Ana',
-    lastName: 'Quispe',
-    email: 'cliente@delivereats.local',
-    phone: '+51951000001',
-    role: UserRole.CUSTOMER,
-  },
-  {
-    id: '22222222-2222-4222-8222-222222222222',
-    firstName: 'Luis',
-    lastName: 'Huamán',
-    email: 'driver@delivereats.local',
-    phone: '+51951000002',
-    role: UserRole.DRIVER,
-  },
-  {
-    id: '33333333-3333-4333-8333-333333333333',
-    firstName: 'María',
-    lastName: 'Cárdenas',
-    email: 'comercio@delivereats.local',
-    phone: '+51951000003',
-    role: UserRole.MERCHANT,
-  },
-  {
-    id: '44444444-4444-4444-8444-444444444444',
-    firstName: 'Diego',
-    lastName: 'Palomino',
-    email: 'admin@delivereats.local',
-    phone: '+51951000004',
-    role: UserRole.ADMIN,
-  },
-] as const;
-
+// Operational drafts only. Never creates accounts, credentials, addresses or acceptances.
+const titles: Record<LegalDocumentType, string> = {
+  GENERAL_TERMS: 'Términos generales del servicio', PRIVACY_POLICY: 'Política de privacidad',
+  SHIPPING_TERMS: 'Condiciones de envíos personales', PROHIBITED_ITEMS_POLICY: 'Política de artículos prohibidos y restringidos',
+  DRIVER_TERMS: 'Condiciones para repartidores', MERCHANT_TERMS: 'Condiciones para comercios',
+};
 async function main() {
-  const passwordHash = await hash('Demo12345!', 10);
-  for (const user of demoUsers) {
-    await prisma.user.upsert({
-      where: { email: user.email },
-      update: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        role: user.role,
-        status: 'ACTIVE',
-      },
-      create: { ...user, passwordHash },
+  for (const type of Object.values(LegalDocumentType)) {
+    await prisma.legalDocument.upsert({
+      where: { type_version: { type, version: 'draft-1' } }, update: {},
+      create: { type, title: titles[type], version: 'draft-1', status: 'DRAFT', mandatory: true,
+        content: `[REVISIÓN JURÍDICA PENDIENTE]\n${titles[type]}\n\nEste borrador no está publicado ni constituye asesoría legal. Completar con asesoría peruana: identidad y domicilio del operador, alcance del servicio, derechos y obligaciones, tarifas y devoluciones, responsabilidades, atención de reclamos, vigencia y canales de contacto.\n\nPara privacidad: responsables, finalidades y base de tratamiento, consentimiento opcional, destinatarios, transferencias, seguridad, plazos de conservación y ejercicio de derechos. Para envíos: categorías y capacidades autorizadas, declaración de contenido, aceptación versionada, revisión de restringidos, exclusión de prohibidos, evidencias y procedimiento de incidencias.\n\nSustituir íntegramente antes de publicar.` },
     });
   }
-
-  const profile = await prisma.customerProfile.upsert({
-    where: { userId: demoUsers[0].id },
-    update: {},
-    create: {
-      id: 'aaaaaaaa-1111-4111-8111-111111111111',
-      userId: demoUsers[0].id,
-      loyaltyPoints: 120,
-      level: 'BRONCE',
-      preferences: { language: 'es-PE', notifications: true },
-    },
-  });
-  await prisma.address.upsert({
-    where: { id: 'aaaaaaaa-2222-4222-8222-222222222222' },
-    update: {},
-    create: {
-      id: 'aaaaaaaa-2222-4222-8222-222222222222',
-      customerId: profile.id,
-      label: 'Casa',
-      address: 'Jr. 28 de Julio 325, Ayacucho',
-      reference: 'A media cuadra de la Plaza Mayor',
-      district: 'Ayacucho',
-      province: 'Huamanga',
-      department: 'Ayacucho',
-      latitude: -13.1603,
-      longitude: -74.2257,
-      isDefault: true,
-    },
-  });
+  process.stdout.write('Borradores legales preparados. No se crearon cuentas.\n');
 }
-
-main()
-  .then(() => prisma.$disconnect())
-  .catch(async (error: unknown) => {
-    process.stderr.write(`${String(error)}\n`);
-    await prisma.$disconnect();
-    process.exitCode = 1;
-  });
+main().catch(() => { process.stderr.write('No se pudieron preparar los borradores legales.\n'); process.exitCode = 1; }).finally(() => prisma.$disconnect());

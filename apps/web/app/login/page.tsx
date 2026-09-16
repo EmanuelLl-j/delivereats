@@ -5,6 +5,7 @@ import { ArrowRight, Bike, Building2, Eye, EyeOff, MapPin, ShieldCheck } from 'l
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
+import Link from 'next/link';
 
 const schema = z.object({
   email: z.email('Ingresa un correo válido'),
@@ -22,7 +23,7 @@ export default function LoginPage() {
     formState: { errors, isSubmitting },
   } = useForm<LoginValues>({
     resolver: zodResolver(schema),
-    defaultValues: { email: 'comercio@delivereats.local', password: 'Demo12345!' },
+    defaultValues: { email: '', password: '' },
   });
 
   async function onSubmit(values: LoginValues) {
@@ -41,7 +42,7 @@ export default function LoginPage() {
   }
 
   const highlights = [
-    { Icon: Building2, value: '4', label: 'comercios demo' },
+    { Icon: Building2, value: 'Comercios', label: 'operación local' },
     { Icon: Bike, value: 'GPS', label: 'seguimiento vivo' },
     { Icon: ShieldCheck, value: '4 roles', label: 'acceso seguro' },
   ];
@@ -82,7 +83,7 @@ export default function LoginPage() {
             ))}
           </div>
         </div>
-        <p className="relative text-xs text-white/35">PDGP-PN · Demostración académica avanzada</p>
+        <p className="relative text-xs text-white/35">DeliverEats Biz · Ayacucho</p>
       </section>
 
       <section className="flex min-h-screen items-center justify-center bg-white px-6 py-12 sm:px-12">
@@ -163,9 +164,10 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-8 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-xs leading-5 text-amber-900">
-            <strong className="block text-sm">Acceso de demostración</strong>
-            comercio@delivereats.local · Demo12345!
+          <div className="mt-7 flex flex-wrap justify-between gap-4 text-sm font-semibold text-indigo-900">
+            <Link href="/auth/forgot">Olvidé mi contraseña</Link>
+            <Link href="/auth/register">Registrar mi comercio</Link>
+            <Link href="/legal">Términos y privacidad</Link>
           </div>
         </div>
       </section>

@@ -27,7 +27,11 @@ import { OrdersGateway } from './orders.gateway';
 import { OrdersService } from './orders.service';
 import { PaymentService } from './payments/payment.service';
 import { PrismaService } from './prisma.service';
+import { InternalPrivacyController } from './privacy.controller';
 import { PromotionsService } from './promotions.service';
+import { ShipmentsService } from './shipments.service';
+import { OperationsController } from './operations.controller';
+import { ShipmentsController, AdminShipmentsController, InternalShipmentsController } from './shipments.controller';
 
 @Module({
   imports: [
@@ -35,6 +39,7 @@ import { PromotionsService } from './promotions.service';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
   ],
   controllers: [
+    InternalPrivacyController,
     CommerceController,
     MerchantPortalController,
     CartController,
@@ -44,14 +49,20 @@ import { PromotionsService } from './promotions.service';
     InternalOrdersController,
     AdminController,
     HealthController,
+    ShipmentsController,
+    OperationsController,
+    AdminShipmentsController,
+    InternalShipmentsController,
   ],
   providers: [
     PrismaService,
+    { provide: 'EVENT_OUTBOX', useExisting: PrismaService },
     CommerceService,
     CartService,
     OrdersService,
     PaymentService,
     PromotionsService,
+    ShipmentsService,
     MapsService,
     OrdersGateway,
     EventPublisher,

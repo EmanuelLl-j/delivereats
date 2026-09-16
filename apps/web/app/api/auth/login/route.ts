@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { sameOrigin, sessionResponse } from '../../../../lib/server-auth';
 
 type LoginResponse = {
   accessToken: string;
@@ -7,6 +8,7 @@ type LoginResponse = {
 };
 
 export async function POST(request: Request) {
+  if (!sameOrigin(request)) return NextResponse.json({ message: 'Origen no autorizado' }, { status: 403 });
   const payload: unknown = await request.json();
   const upstream = await fetch(
     `${process.env.USERS_SERVICE_URL ?? 'http://localhost:3001'}/auth/login`,
@@ -37,28 +39,5 @@ export async function POST(request: Request) {
     );
   }
 
-  const response = NextResponse.json({ role: body.user.role });
-  const secure = process.env.NODE_ENV === 'production';
-  response.cookies.set('access_token', body.accessToken, {
-    httpOnly: true,
-    secure,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 15 * 60,
-  });
-  response.cookies.set('refresh_token', body.refreshToken, {
-    httpOnly: true,
-    secure,
-    sameSite: 'strict',
-    path: '/api/auth',
-    maxAge: 7 * 24 * 60 * 60,
-  });
-  response.cookies.set('user_role', body.user.role, {
-    httpOnly: true,
-    secure,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 15 * 60,
-  });
-  return response;
+  return sessionResponse(body);
 }

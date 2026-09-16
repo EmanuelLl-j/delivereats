@@ -6,10 +6,12 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { CurrentUser, Public, Roles } from '@delivereats/backend-kit';
+import { SkipThrottle } from '@nestjs/throttler';
+import { authorizeInternal, CurrentUser, Public, Roles } from '@delivereats/backend-kit';
 import { UserRole, type JwtPayload } from '@delivereats/shared-types';
 import {
   AdminDriverStatusDto,
@@ -18,6 +20,10 @@ import {
   LocationDto,
   OfferAssignmentDto,
   SetAvailabilityDto,
+  DriverApplicationDto,
+  DriverReviewDto,
+  ShipmentCodeDto,
+  LocationBatchDto,
 } from './dto';
 import { DriversService } from './drivers.service';
 
@@ -27,6 +33,15 @@ import { DriversService } from './drivers.service';
 @Controller('drivers')
 export class DriversController {
   constructor(private readonly drivers: DriversService) {}
+
+  @Get('me/earnings') earnings(@CurrentUser() user: JwtPayload, @Query('period') period?: string) { return this.drivers.earnings(user.sub, period); }
+  @Get('me/history') history(@CurrentUser() user: JwtPayload, @Query('cursor') cursor?: string) { return this.drivers.history(user.sub, cursor); }
+
+  @Post('me/application') apply(@CurrentUser() user: JwtPayload, @Body() dto: DriverApplicationDto) { return this.drivers.apply(user.sub, dto); }
+
+  @Post('me/assignments/:id/verify') verify(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: ShipmentCodeDto) { return this.drivers.verifyShipment(user.sub, id, dto); }
+
+  @Post('me/locations/batch') batch(@CurrentUser() user: JwtPayload, @Body() dto: LocationBatchDto) { return this.drivers.locationBatch(user.sub, dto.locations); }
 
   @Get('me')
   profile(@CurrentUser() user: JwtPayload) {
@@ -94,14 +109,14 @@ export class DriversController {
 
 @ApiBearerAuth()
 @ApiTags('Tracking')
-@Roles(UserRole.CUSTOMER, UserRole.MERCHANT, UserRole.ADMIN)
+@Roles(UserRole.CUSTOMER, UserRole.DRIVER, UserRole.ADMIN)
 @Controller('tracking')
 export class TrackingController {
   constructor(private readonly drivers: DriversService) {}
 
   @Get('orders/:orderId/location')
-  orderLocation(@Param('orderId') orderId: string) {
-    return this.drivers.orderLocation(orderId);
+  orderLocation(@CurrentUser() user: JwtPayload, @Param('orderId') orderId: string) {
+    return this.drivers.orderLocation(user, orderId);
   }
 }
 
@@ -111,6 +126,8 @@ export class TrackingController {
 @Controller('admin/drivers')
 export class AdminDriversController {
   constructor(private readonly drivers: DriversService) {}
+
+  @Get('audit') audit() { return this.drivers.audit(); }
 
   @Get()
   list() {
@@ -123,15 +140,24 @@ export class AdminDriversController {
   }
 
   @Patch(':id/status')
-  status(@Param('id') id: string, @Body() dto: AdminDriverStatusDto) {
-    return this.drivers.setAdminStatus(id, dto);
+  status(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: AdminDriverStatusDto) {
+    return this.drivers.setAdminStatus(user.sub, id, dto);
   }
+
+  @Patch(':id/review') review(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: DriverReviewDto) { return this.drivers.review(user.sub, id, dto); }
 }
 
 @ApiTags('Comunicación interna')
+@SkipThrottle()
 @Controller('internal/assignments')
 export class InternalAssignmentsController {
   constructor(private readonly drivers: DriversService) {}
+
+  @Public() @Get('participation/:orderId/:userId')
+  participation(@Headers('x-internal-service-secret') secret: string, @Param('orderId') orderId: string, @Param('userId') userId: string) {
+    authorizeInternal(secret);
+    return this.drivers.participation(orderId, userId);
+  }
 
   @Public()
   @Post('offer')

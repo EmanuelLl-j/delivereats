@@ -21,7 +21,7 @@ export default function LoginScreen() {
     formState: { errors, isSubmitting },
   } = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { email: 'cliente@delivereats.local', password: 'Demo12345!' },
+    defaultValues: { email: '', password: '' },
   });
   const submit = handleSubmit(async (values) => {
     try {
@@ -98,7 +98,7 @@ export default function LoginScreen() {
               </Link>
             </View>
           </View>
-          <Text style={styles.demo}>Demo: cliente@delivereats.local · Demo12345!</Text>
+          <Link href="/legal" style={styles.footer}>Términos y privacidad</Link>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -141,5 +141,5 @@ const styles = StyleSheet.create({
   },
   links: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 20 },
   link: { color: colors.navy2, fontSize: 12, fontWeight: '800' },
-  demo: { color: '#94A3B8', fontSize: 11, textAlign: 'center', marginTop: 22 },
+  footer: { color: '#94A3B8', fontSize: 11, textAlign: 'center', marginTop: 22 },
 });

@@ -13,8 +13,9 @@ import {
   DriverStatus,
   Prisma,
 } from './generated/prisma';
-import { EventPublisher } from '@delivereats/backend-kit';
-import { OrderStatus, type DriverLocation } from '@delivereats/shared-types';
+import { EventPublisher, internalRequest, requireLegal, requireOwnedFile } from '@delivereats/backend-kit';
+import { OrderStatus, type DriverLocation, type JwtPayload } from '@delivereats/shared-types';
+import { ParticipantsService } from './participants.service';
 import { haversineKm } from '@delivereats/shared-utils';
 import {
   AdminDriverStatusDto,
@@ -22,6 +23,9 @@ import {
   LocationDto,
   OfferAssignmentDto,
   SetAvailabilityDto,
+  DriverApplicationDto,
+  DriverReviewDto,
+  ShipmentCodeDto,
 } from './dto';
 import { PrismaService } from './prisma.service';
 import { TrackingGateway } from './tracking.gateway';
@@ -40,10 +44,11 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     private readonly tracking: TrackingStore,
     private readonly gateway: TrackingGateway,
     private readonly events: EventPublisher,
+    private readonly participants: ParticipantsService,
   ) {}
 
   onModuleInit(): void {
-    this.expirationTimer = setInterval(() => void this.expireOffers(), 3_000);
+    this.expirationTimer = setInterval(() => void this.expireOffers().then(() => this.reconcile()).catch(() => undefined), 3_000);
     this.expirationTimer.unref();
   }
 
@@ -64,7 +69,28 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     return profile;
   }
 
+  audit() { return this.prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 300 }); }
+
+  async earnings(userId: string, period = 'day') {
+    if (!['day', 'week', 'month', 'year'].includes(period)) throw new BadRequestException('Periodo inválido');
+    const profile = await this.profile(userId);
+    const localDate = new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
+    const start = new Date(localDate + 'T00:00:00-05:00');
+    start.setDate(start.getDate() - ({ day: 0, week: 6, month: 29, year: 364 }[period] ?? 0));
+    const totals = await this.prisma.driverAssignment.aggregate({ where: { driverId: profile.id, status: 'COMPLETED', completedAt: { gte: start } }, _sum: { estimatedEarnings: true }, _count: true });
+    const amount = Number(totals._sum.estimatedEarnings ?? 0);
+    return { period, from: start.toISOString(), completed: totals._count, amount, average: totals._count ? amount / totals._count : 0, currency: 'PEN', settlementStatus: 'ACCRUED_NOT_BANK_SETTLEMENT' };
+  }
+
+  async history(userId: string, cursor?: string) {
+    const profile = await this.profile(userId);
+    if (cursor && !/^[a-f0-9-]{36}$/i.test(cursor)) throw new BadRequestException('Cursor inválido');
+    const rows = await this.prisma.driverAssignment.findMany({ where: { driverId: profile.id }, orderBy: [{ assignedAt: 'desc' }, { id: 'desc' }], take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+    return { items: rows.slice(0, 50), nextCursor: rows.length > 50 ? rows[49]!.id : null };
+  }
+
   async availability(userId: string, dto: SetAvailabilityDto) {
+    await requireLegal(userId, ['GENERAL_TERMS', 'PRIVACY_POLICY', 'DRIVER_TERMS']);
     if (![DriverStatus.AVAILABLE, DriverStatus.OFFLINE].includes(dto.status)) {
       throw new BadRequestException({
         code: 'DRIVER_STATUS_INVALID',
@@ -78,16 +104,18 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
         message: 'No puedes cambiar disponibilidad mientras tienes un pedido activo',
       });
     }
-    if (!profile.approvedAt || profile.status === DriverStatus.SUSPENDED) {
+    if (!profile.approvedAt || profile.applicationStatus !== 'APPROVED' || profile.status === DriverStatus.SUSPENDED) {
       throw new ForbiddenException({
         code: 'DRIVER_NOT_APPROVED',
         message: 'El perfil no está aprobado para repartir',
       });
     }
-    return this.prisma.driverProfile.update({
-      where: { id: profile.id },
+    const claimed = await this.prisma.driverProfile.updateMany({
+      where: { id: profile.id, version: profile.version, status: { in: ['AVAILABLE', 'OFFLINE'] }, applicationStatus: 'APPROVED' },
       data: { status: dto.status, version: { increment: 1 } },
     });
+    if (!claimed.count) throw new ConflictException('Tu disponibilidad cambió; vuelve a cargarla');
+    return this.profile(userId);
   }
 
   async activeOffer(userId: string) {
@@ -102,7 +130,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async offer(dto: OfferAssignmentDto, correlationId?: string) {
+  async offer(dto: OfferAssignmentDto, _correlationId?: string) {
     await this.prisma.assignmentRequest.upsert({
       where: { orderId: dto.orderId },
       create: {
@@ -111,34 +139,24 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
         destination: dto.destination as unknown as Prisma.InputJsonValue,
         estimatedEarnings: dto.estimatedEarnings,
         pickupCount: dto.pickupPoints.length,
+        vehicleTypes: dto.vehicleTypes,
       },
       update: {
         pickupPoints: dto.pickupPoints as unknown as Prisma.InputJsonValue,
         destination: dto.destination as unknown as Prisma.InputJsonValue,
         estimatedEarnings: dto.estimatedEarnings,
         pickupCount: dto.pickupPoints.length,
-        status: AssignmentRequestStatus.SEARCHING,
+        vehicleTypes: dto.vehicleTypes,
       },
     });
     const result = await this.offerStored(dto.orderId);
-    if (result) {
-      await this.events.publish(
-        'driver.assigned',
-        {
-          orderId: dto.orderId,
-          driverId: result.driverId,
-          assignmentId: result.id,
-          phase: 'OFFERED',
-        },
-        correlationId,
-      );
-    }
     return result
       ? { driverId: result.driverId, assignment: result }
       : { driverId: null, assignment: null };
   }
 
   async accept(userId: string, assignmentId: string, correlationId?: string) {
+    await requireLegal(userId, ['GENERAL_TERMS', 'PRIVACY_POLICY', 'DRIVER_TERMS']);
     const profile = await this.profile(userId);
     const assignment = await this.withSerializableRetry(() =>
       this.prisma.$transaction(
@@ -158,7 +176,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
               message: 'La oferta venció o ya fue respondida',
             });
           const driverClaim = await tx.driverProfile.updateMany({
-            where: { id: profile.id, status: DriverStatus.RESERVED },
+            where: { id: profile.id, status: DriverStatus.RESERVED, version: profile.version, applicationStatus: 'APPROVED' },
             data: { status: DriverStatus.BUSY, version: { increment: 1 } },
           });
           if (!driverClaim.count)
@@ -187,10 +205,10 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     if (!response.ok)
       throw new ConflictException({
         code: 'ORDER_ASSIGNMENT_FAILED',
-        message: 'El pedido no aceptó la asignación; vuelve a intentar',
+        message: 'La asignación está conciliándose. Consulta tu entrega activa; no aceptes otra oferta.',
       });
     await this.events.publish(
-      'driver.assigned',
+      'driver.accepted',
       {
         orderId: assignment.orderId,
         driverId: profile.id,
@@ -226,7 +244,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
       { orderId: assignment.orderId, driverId: profile.id },
       correlationId,
     );
-    void this.offerStored(assignment.orderId);
+    void this.offerStored(assignment.orderId).catch(() => undefined);
     return assignment;
   }
 
@@ -284,36 +302,15 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
         code: 'ORDER_STATUS_FAILED',
         message: 'El pedido no aceptó el cambio de estado',
       });
-    if (status === OrderStatus.DELIVERED) {
-      await this.prisma.$transaction([
-        this.prisma.driverAssignment.update({
-          where: { id: assignment.id },
-          data: { status: AssignmentStatus.COMPLETED, completedAt: new Date() },
-        }),
-        this.prisma.driverProfile.update({
-          where: { id: profile.id },
-          data: {
-            status: DriverStatus.AVAILABLE,
-            completedOrders: { increment: 1 },
-            version: { increment: 1 },
-          },
-        }),
-        this.prisma.assignmentRequest.update({
-          where: { orderId: assignment.orderId },
-          data: { status: AssignmentRequestStatus.COMPLETED },
-        }),
-      ]);
-      await this.events.publish(
-        'order.delivered',
-        { orderId: assignment.orderId, driverId: profile.id },
-        correlationId,
-      );
-    }
+    if (status === OrderStatus.DELIVERED) await this.finishAssignment(assignment.id, true);
     return response.json();
   }
 
   async location(userId: string, dto: LocationDto) {
     const profile = await this.profile(userId);
+    if (profile.applicationStatus !== 'APPROVED') throw new ForbiddenException('Perfil no aprobado');
+    const timestamp = new Date(dto.timestamp ?? Date.now()).getTime();
+    if (!Number.isFinite(timestamp) || timestamp > Date.now() + 15_000 || timestamp < Date.now() - 10 * 60_000) throw new BadRequestException('La marca temporal GPS no es válida');
     if (profile.status !== DriverStatus.BUSY && dto.orderId) {
       throw new ForbiddenException({
         code: 'DRIVER_NOT_ON_DELIVERY',
@@ -333,8 +330,9 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
       speed: dto.speed,
       timestamp: dto.timestamp ?? new Date().toISOString(),
     };
-    await this.tracking.set(location);
-    this.gateway.emitLocation(dto.orderId, location);
+    const stored = await this.tracking.set(location);
+    if (!stored) return { accepted: false, reason: 'STALE_OR_DUPLICATE' };
+    await this.gateway.emitLocation(dto.orderId, location);
     const last = this.lastPersisted.get(profile.id) ?? 0;
     if (Date.now() - last >= 60_000) {
       this.lastPersisted.set(profile.id, Date.now());
@@ -344,7 +342,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
           data: {
             currentLatitude: dto.latitude,
             currentLongitude: dto.longitude,
-            lastLocationAt: new Date(),
+            lastLocationAt: new Date(location.timestamp),
           },
         }),
         this.prisma.locationSample.create({
@@ -361,7 +359,16 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     return location;
   }
 
-  async orderLocation(orderId: string) {
+  async locationBatch(userId: string, locations: LocationDto[]) {
+    const sorted = [...locations].sort((a, b) => new Date(a.timestamp ?? 0).getTime() - new Date(b.timestamp ?? 0).getTime());
+    const results = [];
+    for (const location of sorted) results.push(await this.location(userId, location));
+    return { processed: results.length, results };
+  }
+
+  async orderLocation(user: JwtPayload, orderId: string) {
+    const context = await this.participants.require(user, orderId, true);
+    if (['DELIVERED', 'CANCELLED'].includes(context.order.status)) return null;
     const assignment = await this.prisma.driverAssignment.findFirst({
       where: { orderId, status: { in: [AssignmentStatus.ACCEPTED, AssignmentStatus.COMPLETED] } },
       orderBy: { assignedAt: 'desc' },
@@ -385,33 +392,87 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     return this.prisma.driverProfile.create({ data: dto });
   }
 
-  async setAdminStatus(id: string, dto: AdminDriverStatusDto) {
-    const driver = await this.prisma.driverProfile.findUnique({ where: { id } });
-    if (!driver)
-      throw new NotFoundException({
-        code: 'DRIVER_NOT_FOUND',
-        message: 'Repartidor no encontrado',
-      });
-    if (driver.status === DriverStatus.BUSY && dto.status === DriverStatus.AVAILABLE) {
-      const active = await this.prisma.driverAssignment.count({
-        where: { driverId: id, status: AssignmentStatus.ACCEPTED },
-      });
-      if (active)
-        throw new ConflictException({
-          code: 'DRIVER_HAS_ACTIVE_ORDER',
-          message: 'No se puede liberar un repartidor con pedido activo',
-        });
-    }
-    return this.prisma.driverProfile.update({
-      where: { id },
-      data: {
-        status: dto.status,
-        ...(dto.status === DriverStatus.AVAILABLE && !driver.approvedAt
-          ? { approvedAt: new Date() }
-          : {}),
-        version: { increment: 1 },
-      },
+  async apply(userId: string, dto: DriverApplicationDto) {
+    await requireLegal(userId, ['GENERAL_TERMS', 'PRIVACY_POLICY', 'DRIVER_TERMS']);
+    for (const id of dto.documentIds) await requireOwnedFile(userId, id, ['DRIVER_DOCUMENT']);
+    if (dto.vehicleType !== 'BICYCLE' && (!dto.vehiclePlate || !dto.licenseNumber)) throw new BadRequestException('Se requiere placa y licencia para este vehículo');
+    if (!/^\d{8,12}$/.test(dto.documentNumber)) throw new BadRequestException('Documento inválido');
+    const { documentIds, ...data } = dto;
+    return this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
+      const existing = await tx.driverProfile.findUnique({ where: { userId } });
+      if (existing && existing.applicationStatus !== 'REJECTED') throw new ConflictException('Ya existe una solicitud o perfil');
+      const result = existing ? await tx.driverProfile.update({ where: { userId }, data: { ...data, documents: documentIds, applicationStatus: 'PENDING_REVIEW', status: 'OFFLINE', approvedAt: null, reviewReason: null, version: { increment: 1 } } }) : await tx.driverProfile.create({ data: { ...data, userId, documents: documentIds, applicationStatus: 'PENDING_REVIEW', status: 'OFFLINE' } });
+      await tx.auditLog.create({ data: { actorUserId: userId, action: 'DRIVER_APPLICATION_SUBMITTED', entity: 'DriverProfile', entityId: result.id } });
+      return result;
     });
+  }
+
+  async review(adminId: string, id: string, dto: DriverReviewDto) {
+    return this.prisma.$transaction(async tx => {
+      const driver = await tx.driverProfile.findUniqueOrThrow({ where: { id } });
+      if (driver.userId === adminId) throw new ForbiddenException('No puedes aprobarte a ti mismo');
+      if (['BUSY', 'RESERVED'].includes(driver.status)) throw new ConflictException('Resuelve la entrega u oferta activa antes de modificar la solicitud');
+      if (dto.status === 'APPROVED' && !driver.documents) throw new BadRequestException('La solicitud no tiene documentos');
+      const claimed = await tx.driverProfile.updateMany({ where: { id, version: driver.version }, data: { applicationStatus: dto.status, status: dto.status === 'APPROVED' ? 'OFFLINE' : 'SUSPENDED', approvedAt: dto.status === 'APPROVED' ? new Date() : null, reviewedBy: adminId, reviewReason: dto.reason, version: { increment: 1 } } });
+      if (!claimed.count) throw new ConflictException('El perfil cambió; vuelve a cargarlo');
+      await tx.auditLog.create({ data: { actorUserId: adminId, action: 'DRIVER_REVIEWED', entity: 'DriverProfile', entityId: id, metadata: { status: dto.status, reason: dto.reason } } });
+      return tx.driverProfile.findUniqueOrThrow({ where: { id } });
+    });
+  }
+
+  async setAdminStatus(adminId: string, id: string, dto: AdminDriverStatusDto) {
+    if (!['OFFLINE', 'SUSPENDED'].includes(dto.status)) throw new BadRequestException('Administración solo puede desconectar o suspender; la disponibilidad la establece el repartidor aprobado');
+    const driver = await this.prisma.driverProfile.findUniqueOrThrow({ where: { id } });
+    if (['BUSY', 'RESERVED'].includes(driver.status)) throw new ConflictException('Resuelve primero la entrega activa');
+    return this.prisma.$transaction(async tx => {
+      const claimed = await tx.driverProfile.updateMany({ where: { id, version: driver.version }, data: { status: dto.status, version: { increment: 1 }, ...(dto.status === 'SUSPENDED' ? { applicationStatus: 'SUSPENDED' } : {}) } });
+      if (!claimed.count) throw new ConflictException('El perfil cambió');
+      await tx.auditLog.create({ data: { actorUserId: adminId, action: 'DRIVER_STATUS_CHANGED', entity: 'DriverProfile', entityId: id, metadata: { status: dto.status, reason: dto.reason } } });
+      return this.prisma.driverProfile.findUniqueOrThrow({ where: { id } });
+    });
+  }
+
+  async verifyShipment(userId: string, assignmentId: string, dto: ShipmentCodeDto) {
+    const { profile, assignment } = await this.activeAssignment(userId, assignmentId);
+    const result = await internalRequest<{ orderId: string; status: string }>('orders', `/internal/shipments/${assignment.orderId}/verify`, { ...dto, driverId: profile.id, driverUserId: userId });
+    if (result.status === 'DELIVERED') await this.finishAssignment(assignment.id, true);
+    return result;
+  }
+
+  async finishAssignment(assignmentId: string, delivered: boolean) {
+    return this.prisma.$transaction(async tx => {
+      const assignment = await tx.driverAssignment.findUniqueOrThrow({ where: { id: assignmentId } });
+      const claimed = await tx.driverAssignment.updateMany({ where: { id: assignmentId, status: { in: ['ACCEPTED', 'OFFERED'] } }, data: { status: delivered ? 'COMPLETED' : 'REJECTED', ...(delivered ? { completedAt: new Date() } : { rejectedAt: new Date() }) } });
+      if (!claimed.count) return;
+      await tx.driverProfile.updateMany({ where: { id: assignment.driverId, status: { in: ['BUSY', 'RESERVED'] } }, data: { status: 'AVAILABLE', completedOrders: { increment: delivered ? 1 : 0 }, version: { increment: 1 } } });
+      await tx.assignmentRequest.update({ where: { orderId: assignment.orderId }, data: { status: delivered ? 'COMPLETED' : 'CANCELLED' } });
+    });
+  }
+
+  private reconciling = false;
+  async reconcile() {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      const pending = await this.prisma.driverAssignment.findMany({ where: { status: { in: ['ACCEPTED', 'OFFERED'] } }, orderBy: { assignedAt: 'asc' }, take: 100 });
+      for (const assignment of pending) {
+        try {
+          const order = await this.participants.context(assignment.orderId);
+          if (order.status === 'CANCELLED' || (order.assignedDriverId && order.assignedDriverId !== assignment.driverId)) await this.finishAssignment(assignment.id, false);
+          else if (order.status === 'DELIVERED') await this.finishAssignment(assignment.id, true);
+          else if (order.status === 'SEARCHING_DRIVER' && assignment.status === 'ACCEPTED') await this.callOrders(assignment.orderId, 'assign', { driverId: assignment.driverId });
+        } catch { /* Unknown remote outcome keeps the driver reserved until reconciliation succeeds. */ }
+      }
+      const searching = await this.prisma.assignmentRequest.findMany({ where: { status: 'SEARCHING' }, take: 30, orderBy: { updatedAt: 'asc' } });
+      for (const request of searching) {
+        try {
+          const order = await this.participants.context(request.orderId);
+          if (order.status === 'SEARCHING_DRIVER') await this.offerStored(request.orderId);
+          else if (['CANCELLED', 'DELIVERED'].includes(order.status)) await this.prisma.assignmentRequest.update({ where: { orderId: request.orderId }, data: { status: order.status === 'CANCELLED' ? 'CANCELLED' : 'COMPLETED' } });
+        } catch { /* Durable requests are retried on the next pass. */ }
+      }
+    } finally { this.reconciling = false; }
   }
 
   async expireOffers(): Promise<void> {
@@ -432,8 +493,12 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
           });
         }
       });
-      void this.offerStored(assignment.orderId);
+      void this.offerStored(assignment.orderId).catch(() => undefined);
     }
+  }
+
+  async participation(orderId: string, userId: string) {
+    return { allowed: Boolean(await this.prisma.driverAssignment.findFirst({ where: { orderId, driver: { userId }, acceptedAt: { not: null } }, select: { id: true } })) };
   }
 
   private async offerStored(orderId: string) {
@@ -456,6 +521,10 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
             where: {
               status: DriverStatus.AVAILABLE,
               approvedAt: { not: null },
+              applicationStatus: 'APPROVED',
+              lastLocationAt: { gt: new Date(Date.now() - 2 * 60_000) },
+              ...(Array.isArray(request.vehicleTypes) ? { vehicleType: { in: request.vehicleTypes as Array<'BICYCLE' | 'MOTORCYCLE' | 'CAR'> } } : {}),
+              assignments: { none: { orderId, status: { in: ['REJECTED', 'EXPIRED'] }, assignedAt: { gt: new Date(Date.now() - 5 * 60_000) } } },
               currentLatitude: { not: null },
               currentLongitude: { not: null },
             },
@@ -483,7 +552,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
             });
             if (!reserved.count) continue;
             const destination = request.destination as StoredDestination;
-            return tx.driverAssignment.create({
+            const assignment = await tx.driverAssignment.create({
               data: {
                 orderId,
                 driverId: candidate.id,
@@ -494,6 +563,8 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
                 expiresAt: new Date(Date.now() + 15_000),
               },
             });
+            await this.events.enqueue(tx, 'driver.assigned', { userId: candidate.userId, orderId, driverId: candidate.id, assignmentId: assignment.id, phase: 'OFFERED' });
+            return assignment;
           }
           return null;
         },
@@ -515,7 +586,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
     return { profile, assignment };
   }
 
-  private async withSerializableRetry<T>(operation: () => Promise<T>, maxAttempts = 8): Promise<T> {
+  private async withSerializableRetry<T>(operation: () => Promise<T>, maxAttempts = 24): Promise<T> {
     for (let attempt = 1; ; attempt += 1) {
       try {
         return await operation();
@@ -546,6 +617,7 @@ export class DriversService implements OnModuleInit, OnModuleDestroy {
           'x-correlation-id': correlationId ?? '',
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8_000),
       },
     ).catch(() => ({ ok: false, json: async () => ({}) }) as Response);
   }

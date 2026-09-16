@@ -1,0 +1,44 @@
+# Docker Compose >= 2.24.4. Use together with docker-compose.yml and --env-file .env.production.
+services:
+  postgres-users:
+    ports: !reset []
+  postgres-orders:
+    ports: !reset []
+  postgres-drivers:
+    ports: !reset []
+  postgres-notifications:
+    ports: !reset []
+  rabbitmq:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  mailpit:
+    profiles: [local-only]
+  livekit:
+    profiles: [local-only]
+  users-service:
+    environment:
+      NODE_ENV: production
+      STORAGE_PROVIDER: s3
+      LOCAL_STORAGE_SIGNING_KEY: ''
+    volumes: !reset []
+  orders-service:
+    environment:
+      NODE_ENV: production
+  drivers-service:
+    environment:
+      NODE_ENV: production
+  notifications-service:
+    environment:
+      NODE_ENV: production
+      SMTP_REQUIRE_TLS: 'true'
+  web:
+    ports: !reset []
+    environment:
+      COOKIE_SECURE: 'true'
+  nginx:
+    ports: !override ['80:80', '443:443']
+    volumes: !override
+      - ./infrastructure/nginx/production.conf:/etc/nginx/nginx.conf:ro
+      - ${TLS_CERTIFICATE_PATH:?Completa TLS_CERTIFICATE_PATH}:/etc/nginx/tls/fullchain.pem:ro
+      - ${TLS_PRIVATE_KEY_PATH:?Completa TLS_PRIVATE_KEY_PATH}:/etc/nginx/tls/privkey.pem:ro

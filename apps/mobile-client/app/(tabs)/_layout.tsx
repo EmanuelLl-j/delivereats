@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Bell, Home, Search, ShoppingBag, UserRound } from 'lucide-react-native';
+import { Home, Search, ShoppingBag, UserRound } from 'lucide-react-native';
 import { colors } from '@/components/ui';
 
 export default function TabsLayout() {
@@ -44,7 +44,7 @@ export default function TabsLayout() {
         name="notifications"
         options={{
           title: 'Avisos',
-          tabBarIcon: ({ color, size }) => <Bell color={color} size={size} />,
+          href: null,
         }}
       />
       <Tabs.Screen

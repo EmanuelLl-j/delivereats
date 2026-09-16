@@ -11,6 +11,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { OrderStatus } from './generated/prisma';
 import { CurrentUser, Public, Roles } from '@delivereats/backend-kit';
 import { UserRole, type JwtPayload } from '@delivereats/shared-types';
@@ -20,10 +21,14 @@ import {
   AddCartItemDto,
   CheckoutDto,
   CreateCategoryDto,
+  UpdateCategoryDto,
   CreateMerchantDto,
   CreateProductDto,
   CreatePromotionDto,
-  MockPaymentDecisionDto,
+  PaymentReviewDto,
+  PaymentEvidenceDto,
+  MerchantApplicationDto,
+  SubOrderTransitionDto,
   RatingDto,
   TransitionOrderDto,
   UpdateCartItemDto,
@@ -88,6 +93,11 @@ export class CommerceController {
     return this.commerce.addProduct(user.sub, user.role === UserRole.ADMIN, id, dto);
   }
 
+  @ApiBearerAuth() @Roles(UserRole.ADMIN, UserRole.MERCHANT)
+  @Patch('categories/:id') updateCategory(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: UpdateCategoryDto) {
+    return this.commerce.updateCategory(user.sub, user.role === UserRole.ADMIN, id, dto);
+  }
+
   @ApiBearerAuth()
   @Roles(UserRole.ADMIN, UserRole.MERCHANT)
   @Patch('products/:id')
@@ -116,6 +126,10 @@ export class MerchantPortalController {
   dashboard(@CurrentUser() user: JwtPayload) {
     return this.commerce.dashboard(user.sub);
   }
+
+  @Post('application') application(@CurrentUser() user: JwtPayload, @Body() dto: MerchantApplicationDto) {
+    return this.commerce.apply(user.sub, dto);
+  }
 }
 
 @ApiBearerAuth()
@@ -124,6 +138,9 @@ export class MerchantPortalController {
 @Controller('cart')
 export class CartController {
   constructor(private readonly cart: CartService) {}
+
+  @Post('quote')
+  quote(@CurrentUser() user: JwtPayload, @Body() dto: CheckoutDto) { return this.cart.quote(user.sub, dto); }
 
   @Get()
   get(@CurrentUser() user: JwtPayload) {
@@ -162,6 +179,9 @@ export class CartController {
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
 
+  @Roles(UserRole.MERCHANT, UserRole.ADMIN)
+  @Patch('suborders/:id/status') subOrder(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: SubOrderTransitionDto) { return this.orders.transitionSubOrder(user, id, dto); }
+
   @Roles(UserRole.CUSTOMER, UserRole.MERCHANT, UserRole.ADMIN)
   @Get()
   list(@CurrentUser() user: JwtPayload, @Query('status') status?: OrderStatus) {
@@ -198,6 +218,14 @@ export class OrdersController {
 export class PaymentsController {
   constructor(private readonly payments: PaymentService) {}
 
+  @Get('methods') methods() { return this.payments.methods(); }
+
+  @Roles(UserRole.CUSTOMER)
+  @Post('orders/:id') retry(@CurrentUser() user: JwtPayload, @Param('id') id: string) { return this.payments.retryOwn(id, user.sub); }
+
+  @Roles(UserRole.CUSTOMER)
+  @Post(':id/evidence') evidence(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: PaymentEvidenceDto) { return this.payments.evidence(id, user.sub, dto); }
+
   @Roles(UserRole.CUSTOMER, UserRole.ADMIN)
   @Get(':id')
   get(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
@@ -205,25 +233,24 @@ export class PaymentsController {
   }
 
   @Roles(UserRole.ADMIN)
-  @Post(':id/mock-decision')
-  mockDecision(
+  @Post(':id/review')
+  review(
+    @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
-    @Body() dto: MockPaymentDecisionDto,
-    @Headers('x-correlation-id') correlationId?: string,
+    @Body() dto: PaymentReviewDto,
   ) {
-    return this.payments.decideMock(id, dto.approved, correlationId);
+    return this.payments.review(id, user.sub, dto.approved, dto.reason);
   }
 
   @Public()
   @Post('webhook/mercadopago')
   webhook(
-    @Body() body: { data?: { id?: string }; id?: string },
+    @Headers('x-request-id') requestId: string,
+    @Headers('x-signature') signature: string,
     @Query('data.id') queryId?: string,
     @Headers('x-correlation-id') correlationId?: string,
   ) {
-    const id = queryId ?? body.data?.id ?? body.id;
-    if (!id) return { received: true };
-    return this.payments.verifyMercadoPago(id, correlationId);
+    return this.payments.verifyMercadoPago(queryId ?? '', requestId ?? '', signature ?? '', correlationId);
   }
 }
 
@@ -251,6 +278,7 @@ export class PromotionsController {
 }
 
 @ApiTags('Comunicación interna')
+@SkipThrottle()
 @Controller('internal/orders')
 export class InternalOrdersController {
   constructor(private readonly orders: OrdersService) {}
@@ -259,6 +287,19 @@ export class InternalOrdersController {
     if (!process.env.INTERNAL_SERVICE_SECRET || secret !== process.env.INTERNAL_SERVICE_SECRET) {
       throw new UnauthorizedException('Credencial interna inválida');
     }
+  }
+
+  @Public()
+  @Get(':id/context')
+  context(@Headers('x-internal-service-secret') secret: string | undefined, @Param('id') id: string) {
+    this.authorize(secret);
+    return this.orders.context(id);
+  }
+
+  @Public() @Get(':id/participation/:userId')
+  participation(@Headers('x-internal-service-secret') secret: string, @Param('id') id: string, @Param('userId') userId: string) {
+    this.authorize(secret);
+    return this.orders.participation(id, userId);
   }
 
   @Public()

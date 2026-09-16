@@ -1,6 +1,8 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import { apiRequest as getJson } from '@/lib/api';
+import type { Analytics, ServiceState } from '@/components/system-panels';
 import {
   Activity,
   Bike,
@@ -21,14 +23,6 @@ import {
 } from 'recharts';
 import { ErrorPanel, KpiCard, LoadingPanel, PageHeading, StatusBadge } from '@/components/ui';
 
-type User = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  role: string;
-  status: string;
-};
 type Driver = { id: string; status: string };
 type Metrics = {
   merchants: number;
@@ -47,23 +41,11 @@ type Order = {
   createdAt: string;
 };
 
-const chartData = [
-  { hour: '08h', orders: 4 },
-  { hour: '10h', orders: 12 },
-  { hour: '12h', orders: 28 },
-  { hour: '14h', orders: 21 },
-  { hour: '16h', orders: 31 },
-  { hour: '18h', orders: 42 },
-  { hour: '20h', orders: 35 },
-];
-
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Request failed');
-  return response.json() as Promise<T>;
-}
-
 export default function AdminDashboard() {
+  const analytics = useQuery({ queryKey: ['admin-hourly'], queryFn: () => getJson<Analytics>('/api/backend/orders/admin/analytics'), refetchInterval: 15000 });
+  const system = useQuery({ queryKey: ['system-readiness'], queryFn: () => getJson<ServiceState[]>('/api/backend/orders/admin/system'), refetchInterval: 10000 });
+  const readyCount = system.data?.filter(service => service.status === 'ready').length;
+  const ready = !!system.data?.length && readyCount === system.data.length;
   const metrics = useQuery({
     queryKey: ['admin-metrics'],
     queryFn: () => getJson<Metrics>('/api/backend/orders/admin/metrics'),
@@ -71,7 +53,7 @@ export default function AdminDashboard() {
   });
   const users = useQuery({
     queryKey: ['admin-users'],
-    queryFn: () => getJson<User[]>('/api/backend/users/users'),
+    queryFn: () => getJson<{ active: number }>('/api/backend/users/admin/user-metrics'),
   });
   const drivers = useQuery({
     queryKey: ['admin-drivers'],
@@ -86,7 +68,7 @@ export default function AdminDashboard() {
     return <LoadingPanel />;
   if (metrics.isError || users.isError || drivers.isError || orders.isError) return <ErrorPanel />;
   const m = metrics.data!;
-  const activeUsers = users.data!.filter((user) => user.status === 'ACTIVE').length;
+  const activeUsers = users.data!.active;
   const activeDrivers = drivers.data!.filter((driver) =>
     ['AVAILABLE', 'RESERVED', 'BUSY'].includes(driver.status),
   ).length;
@@ -98,9 +80,9 @@ export default function AdminDashboard() {
         title="Operación general"
         description="Un vistazo ejecutivo a la red DeliverEats Ayacucho y sus servicios activos."
         action={
-          <span className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-extrabold text-emerald-700">
-            <span className="size-2 animate-pulse rounded-full bg-emerald-500" /> Plataforma
-            operativa
+          <span className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-extrabold ${ready ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+            <span className={`size-2 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+            {system.isLoading ? 'Consultando servicios…' : ready ? 'Dependencias operativas' : 'Servicios por revisar'}
           </span>
         }
       />
@@ -157,8 +139,8 @@ export default function AdminDashboard() {
         />
         <KpiCard
           label="Servicios"
-          value="4 / 4"
-          hint="Microservicios configurados"
+          value={system.data ? `${readyCount} / ${system.data.length}` : '—'}
+          hint="Readiness verificado"
           icon={Activity}
           tone="blue"
         />
@@ -176,9 +158,10 @@ export default function AdminDashboard() {
               Hoy
             </span>
           </div>
+          {analytics.isError && <ErrorPanel message={analytics.error.message} />}
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
+              <AreaChart data={analytics.data?.hours ?? []}>
                 <defs>
                   <linearGradient id="orders" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.28} />

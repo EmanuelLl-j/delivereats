@@ -1,7 +1,8 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Roles } from '@delivereats/backend-kit';
-import { UserRole } from '@delivereats/shared-types';
+import { CurrentUser, Roles } from '@delivereats/backend-kit';
+import { UserRole, type JwtPayload } from '@delivereats/shared-types';
+import { ApplicationReviewDto } from './dto';
 import { CommerceService } from './commerce.service';
 
 @ApiBearerAuth()
@@ -20,4 +21,6 @@ export class AdminController {
   merchants() {
     return this.commerce.adminMerchants();
   }
+
+  @Patch('merchants/:id/review') review(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: ApplicationReviewDto) { return this.commerce.review(user.sub, id, dto); }
 }

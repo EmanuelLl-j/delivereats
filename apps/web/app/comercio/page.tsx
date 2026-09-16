@@ -13,13 +13,16 @@ import {
 import { useEffect } from 'react';
 import { io } from 'socket.io-client';
 import { ErrorPanel, KpiCard, LoadingPanel, PageHeading, StatusBadge } from '@/components/ui';
+import { apiRequest, json } from '../../lib/api';
+import Link from 'next/link';
+import { OperationForm } from '@/components/operations-ui';
 
 type Item = { id: string; productName: string; quantity: number };
 type SubOrder = {
   id: string;
   status: string;
   subtotal: string;
-  merchant: { name: string };
+  merchant: { name: string; isOpen: boolean; isActive: boolean; applicationStatus: string };
   items: Item[];
   order: {
     id: string;
@@ -31,14 +34,14 @@ type SubOrder = {
   };
 };
 type Dashboard = {
-  merchant: { name: string };
+  merchant: { name: string; isOpen: boolean; isActive: boolean; applicationStatus: string };
   merchants: Array<{ id: string; name: string }>;
   kpis: {
     ordersToday: number;
     activeOrders: number;
     revenue: number;
     averageTicket: number;
-    averagePreparationMinutes: number;
+    averagePreparationMinutes: number | null;
     completedOrders: number;
   };
   orders: SubOrder[];
@@ -77,27 +80,18 @@ export default function MerchantDashboard() {
   const queryClient = useQueryClient();
   const dashboard = useQuery({
     queryKey: ['merchant-dashboard'],
-    queryFn: async () => {
-      const response = await fetch('/api/backend/orders/commerce/dashboard');
-      if (!response.ok) throw new Error('Request failed');
-      return response.json() as Promise<Dashboard>;
-    },
+    queryFn: () => apiRequest<Dashboard>('/api/backend/orders/commerce/dashboard'),
     refetchInterval: 15_000,
   });
   const transition = useMutation({
     mutationFn: async ({ orderId, status }: { orderId: string; status: string }) => {
-      const response = await fetch(`/api/backend/orders/orders/${orderId}/status`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-      if (!response.ok) throw new Error('No se pudo cambiar el estado');
+      return apiRequest(`/api/backend/orders/orders/suborders/${orderId}/status`, json('PATCH', { status }));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['merchant-dashboard'] }),
   });
 
   useEffect(() => {
-    const socket = io(`${process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3002'}/orders`, {
+    const socket = io(`${process.env.NEXT_PUBLIC_SOCKET_URL ?? window.location.origin}/orders`, {
       path: '/socket.io/orders',
       withCredentials: true,
       transports: ['websocket', 'polling'],
@@ -111,7 +105,7 @@ export default function MerchantDashboard() {
   }, [queryClient]);
 
   if (dashboard.isLoading) return <LoadingPanel />;
-  if (dashboard.isError) return <ErrorPanel />;
+  if (dashboard.isError) return <><ErrorPanel message={dashboard.error.message} /><Link className="mt-5 inline-block rounded-xl bg-indigo-950 px-5 py-3 font-bold text-white" href="/comercio/configuracion">Configurar mi comercio</Link></>;
   const data = dashboard.data!;
   return (
     <>
@@ -121,7 +115,7 @@ export default function MerchantDashboard() {
         description={`${data.merchants.length} establecimiento(s) bajo esta cuenta. Gestiona los pedidos sin recargar la página.`}
         action={
           <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-xs font-extrabold text-emerald-700">
-            <span className="size-2 animate-pulse rounded-full bg-emerald-500" /> Recibiendo pedidos
+            <span className={`size-2 rounded-full ${data.merchant.isActive && data.merchant.isOpen ? 'bg-emerald-500' : 'bg-amber-500'}`} /> {data.merchant.isActive && data.merchant.isOpen ? 'Recibiendo pedidos' : data.merchant.applicationStatus === 'APPROVED' ? 'Comercio cerrado' : 'Solicitud en revisión'}
           </span>
         }
       />
@@ -155,8 +149,8 @@ export default function MerchantDashboard() {
         />
         <KpiCard
           label="Preparación"
-          value={`${data.kpis.averagePreparationMinutes} min`}
-          hint="Promedio demo"
+          value={data.kpis.averagePreparationMinutes === null ? 'Sin datos' : `${data.kpis.averagePreparationMinutes} min`}
+          hint="Preparaciones registradas"
           icon={ChefHat}
           tone="amber"
         />
@@ -169,6 +163,7 @@ export default function MerchantDashboard() {
         />
       </section>
       <section className="mt-8">
+        {transition.isError && <ErrorPanel message={transition.error.message} />}
         <div className="mb-4 flex items-end justify-between">
           <div>
             <h2 className="text-xl font-extrabold text-[#071a2f]">Tablero de pedidos</h2>
@@ -201,7 +196,7 @@ export default function MerchantDashboard() {
                   {items.map((item) => {
                     const next =
                       item.status === 'CONFIRMED'
-                        ? { status: 'SEARCHING_DRIVER', label: 'Aceptar y buscar driver' }
+                        ? { status: 'PREPARING', label: 'Aceptar y preparar' }
                         : item.status === 'ASSIGNED' || item.status === 'SEARCHING_DRIVER'
                           ? { status: 'PREPARING', label: 'Iniciar preparación' }
                           : item.status === 'PREPARING'
@@ -244,13 +239,14 @@ export default function MerchantDashboard() {
                           <button
                             disabled={transition.isPending}
                             onClick={() =>
-                              transition.mutate({ orderId: item.order.id, status: next.status })
+                              transition.mutate({ orderId: item.id, status: next.status })
                             }
                             className="mt-4 w-full rounded-lg bg-[#0c2747] px-3 py-2.5 text-xs font-extrabold text-white transition hover:bg-[#12385f] disabled:opacity-50"
                           >
                             {next.label}
                           </button>
                         )}
+                        {['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP'].includes(item.status) && <details className="mt-3 border-t pt-3"><summary className="cursor-pointer text-xs font-bold text-red-700">No puedo atender este pedido</summary><p className="my-3 text-xs text-slate-600">El rechazo cancela el pedido completo, incluidos los demás comercios, únicamente antes de la primera recogida. Un pago verificado requerirá devolución; esta acción no confirma que se haya reembolsado.</p><OperationForm endpoint={'/api/backend/orders/orders/suborders/' + item.id + '/status'} fields={[{ name: 'reason', label: 'Motivo del rechazo', type: 'textarea', min: 10, max: 500 }]} transform={value => ({ ...value, status: 'CANCELLED' })} label="Confirmar rechazo y cancelación" /></details>}
                       </article>
                     );
                   })}

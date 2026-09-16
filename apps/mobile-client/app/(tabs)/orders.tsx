@@ -9,6 +9,7 @@ type Order = {
   id: string;
   orderNumber: string;
   status: string;
+  type: string;
   total: string;
   createdAt: string;
   subOrders: Array<{ merchant: { name: string } }>;
@@ -16,7 +17,7 @@ type Order = {
 
 export default function OrdersScreen() {
   const orders = useQuery({
-    queryKey: ['my-orders'],
+    queryKey: ['orders'],
     queryFn: () => api<Order[]>('/orders/orders'),
     refetchInterval: 10_000,
   });
@@ -37,7 +38,8 @@ export default function OrdersScreen() {
           title="Pedidos"
           subtitle="Historial y seguimiento de tus compras."
         />
-        {!orders.data?.length && !orders.isLoading ? (
+        {orders.isError && <Text accessibilityRole="alert" style={{ color: colors.red, paddingVertical: 16 }}>{orders.error.message}</Text>}
+        {!orders.data?.length && !orders.isLoading && !orders.isError ? (
           <EmptyState
             icon="🧾"
             title="Todavía no tienes pedidos"
@@ -56,7 +58,7 @@ export default function OrdersScreen() {
                     <View>
                       <Text style={styles.number}>{order.orderNumber}</Text>
                       <Text style={styles.merchants} numberOfLines={1}>
-                        {order.subOrders.map((item) => item.merchant.name).join(' + ')}
+                        {order.type === 'PERSONAL_SHIPMENT' ? 'Envío personal' : order.subOrders.map((item) => item.merchant.name).join(' + ')}
                       </Text>
                     </View>
                     <Text style={styles.total}>S/ {Number(order.total).toFixed(2)}</Text>

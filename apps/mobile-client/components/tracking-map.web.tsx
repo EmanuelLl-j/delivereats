@@ -7,7 +7,7 @@ export function TrackingMap({
   pickups,
 }: {
   pickups: TrackingPoint[];
-  driver: { latitude: number; longitude: number };
+  driver?: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
   destinationLabel?: string;
 }) {
@@ -18,7 +18,7 @@ export function TrackingMap({
         <View style={styles.line} />
         <MapPin size={27} color={colors.white} />
       </View>
-      <Text style={styles.title}>Seguimiento en vivo activo</Text>
+      <Text style={styles.title}>Puntos de entrega</Text>
       <Text style={styles.copy}>{pickups.length} recojo(s) antes de tu destino</Text>
       <Text style={styles.note}>Abre iOS o Android para visualizar el mapa interactivo.</Text>
     </View>

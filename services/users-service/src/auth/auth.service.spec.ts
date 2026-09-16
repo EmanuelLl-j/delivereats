@@ -1,83 +1,49 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AuthService } from './auth.service';
 
-vi.mock('bcrypt', () => ({
-  hash: vi.fn(async (value: string) => `hashed:${value}`),
-  compare: vi.fn(async (value: string, hashed: string) => hashed === `hashed:${value}`),
-}));
+vi.mock('bcrypt', () => ({ hash: vi.fn(async (value: string) => `hashed:${value}`), compare: vi.fn(async (value: string, hashed: string) => hashed === `hashed:${value}`) }));
+const password = 'Aa1!' + randomBytes(16).toString('hex');
+const fixture = { id: randomUUID(), firstName: 'Prueba', lastName: 'Efímera', email: `${randomUUID()}@example.test`, phone: null, passwordHash: `hashed:${password}`, role: 'CUSTOMER', status: 'ACTIVE', avatarUrl: null, failedAttempts: 0, lockedUntil: null, lastLoginAt: null, emailVerifiedAt: null, authVersion: 0, createdAt: new Date(), updatedAt: new Date() };
 
-const demoUser = {
-  id: '11111111-1111-4111-8111-111111111111',
-  firstName: 'Ana',
-  lastName: 'Quispe',
-  email: 'cliente@delivereats.local',
-  phone: null,
-  passwordHash: 'hashed:Demo12345!',
-  role: 'CUSTOMER',
-  status: 'ACTIVE',
-  avatarUrl: null,
-  failedAttempts: 0,
-  lockedUntil: null,
-  lastLoginAt: null,
-  createdAt: new Date('2026-01-01'),
-  updatedAt: new Date('2026-01-01'),
-};
-
-describe('AuthService', () => {
-  let prisma: Record<string, unknown>;
+describe('AuthService security', () => {
   let service: AuthService;
-
+  const user = { findFirst: vi.fn(), findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), create: vi.fn(), update: vi.fn() };
+  const refreshSession = { create: vi.fn(), updateMany: vi.fn() };
   beforeEach(() => {
-    prisma = {
-      user: {
-        findFirst: vi.fn(async () => null),
-        findUnique: vi.fn(async () => demoUser),
-        create: vi.fn(async () => demoUser),
-        update: vi.fn(async () => demoUser),
-      },
-      refreshSession: { create: vi.fn(async () => ({})) },
-    };
-    const jwt = {
-      signAsync: vi.fn(async (_payload: unknown, options: { expiresIn: string }) =>
-        options.expiresIn === '7d' ? 'refresh-token' : 'access-token',
-      ),
-    };
-    const events = { publish: vi.fn(async () => true) };
-    service = new AuthService(prisma as never, jwt as never, events as never);
+    vi.resetAllMocks();
+    user.findFirst.mockResolvedValue(null);
+    for (const fn of [user.findUnique, user.findUniqueOrThrow, user.create, user.update]) fn.mockResolvedValue(fixture);
+    refreshSession.create.mockResolvedValue({});
+    const tx = { emailVerification: { create: vi.fn(), updateMany: vi.fn() } };
+    const prisma = { user, refreshSession, $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)) };
+    const jwt = { signAsync: vi.fn(async (_payload: unknown, options: { expiresIn: string }) => options.expiresIn === '7d' ? 'refresh-token' : 'access-token') };
+    service = new AuthService(prisma as never, jwt as never, { publish: vi.fn(), enqueue: vi.fn() } as never);
   });
-
-  it('registers a customer and creates access plus hashed refresh session', async () => {
-    const result = await service.register(
-      {
-        firstName: 'Ana',
-        lastName: 'Quispe',
-        email: 'cliente@delivereats.local',
-        password: 'Demo12345!',
-      },
-      { correlationId: 'test' },
-    );
+  it('creates a customer session without hardcoded credentials', async () => {
+    const result = await service.register({ firstName: fixture.firstName, lastName: fixture.lastName, email: fixture.email, password }, {});
     expect(result.user.role).toBe('CUSTOMER');
     expect(result.accessToken).toBe('access-token');
-    expect(result.refreshToken).toBe('refresh-token');
-    expect(
-      (prisma.refreshSession as { create: ReturnType<typeof vi.fn> }).create,
-    ).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ tokenHash: 'hashed:refresh-token' }),
-      }),
-    );
+    expect(refreshSession.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ tokenHash: 'hashed:' + createHash('sha256').update('refresh-token').digest('hex') }) }));
   });
-
-  it('logs in with a valid bcrypt password and clears failed attempts', async () => {
-    const result = await service.login(
-      { email: 'cliente@delivereats.local', password: 'Demo12345!' },
-      { ip: '127.0.0.1' },
-    );
-    expect(result.user.email).toBe('cliente@delivereats.local');
-    expect((prisma.user as { update: ReturnType<typeof vi.fn> }).update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ failedAttempts: 0, lockedUntil: null }),
-      }),
-    );
+  it('logs in and clears failed attempts', async () => {
+    const result = await service.login({ email: fixture.email, password }, {});
+    expect(result.user.email).toBe(fixture.email);
+    expect(user.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ failedAttempts: 0, lockedUntil: null }) }));
+  });
+  it('rejects suspended accounts before issuing tokens', async () => {
+    user.findUnique.mockResolvedValue({ ...fixture, status: 'SUSPENDED' });
+    await expect(service.login({ email: fixture.email, password }, {})).rejects.toThrow('Correo o contraseña incorrectos');
+    expect(refreshSession.create).not.toHaveBeenCalled();
+  });
+  it('increments wrong-password attempts atomically', async () => {
+    user.update.mockResolvedValue({ ...fixture, failedAttempts: 5 });
+    await expect(service.login({ email: fixture.email, password: 'incorrect' }, {})).rejects.toThrow();
+    expect(user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { failedAttempts: { increment: 1 } } }));
+    expect(user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { lockedUntil: expect.any(Date) } }));
+  });
+  it('rejects passwords that would be truncated by bcrypt UTF-8 limits', async () => {
+    await expect(service.register({ firstName: 'Nombre', lastName: 'Apellido', email: fixture.email, password: '😀'.repeat(30) }, {})).rejects.toThrow('72 bytes');
+    expect(user.create).not.toHaveBeenCalled();
   });
 });

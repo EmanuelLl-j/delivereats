@@ -1,7 +1,11 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, OmitType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsIn,
+  IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
   IsEmail,
   IsEnum,
   IsInt,
@@ -16,6 +20,8 @@ import {
   Max,
   MaxLength,
   Min,
+  Matches,
+  ValidateNested,
 } from 'class-validator';
 import { MerchantCategory, OrderStatus, PaymentMethod, PromotionType } from './generated/prisma';
 
@@ -78,7 +84,16 @@ export class CreateMerchantDto {
   coverUrl?: string;
 }
 
+export class BusinessHourDto {
+  @IsInt() @Min(0) @Max(6) day!: number;
+  @IsBoolean() closed!: boolean;
+  @IsString() @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) open!: string;
+  @IsString() @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) close!: string;
+}
 export class UpdateMerchantDto {
+  @IsOptional() @IsEmail() email?: string;
+  @IsOptional() @IsString() @Length(7, 20) phone?: string;
+  @IsOptional() @IsArray() @ArrayMinSize(7) @ArrayMaxSize(7) @ValidateNested({ each: true }) @Type(() => BusinessHourDto) businessHours?: BusinessHourDto[];
   @IsOptional() @IsString() @Length(2, 120) name?: string;
   @IsOptional() @IsString() @Length(10, 1000) description?: string;
   @IsOptional() @IsEnum(MerchantCategory) category?: MerchantCategory;
@@ -102,6 +117,12 @@ export class CreateCategoryDto {
   @Type(() => Number)
   @IsInt()
   sortOrder?: number;
+}
+
+export class UpdateCategoryDto {
+  @IsOptional() @IsString() @Length(2, 80) name?: string;
+  @IsOptional() @IsInt() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 export class CreateProductDto {
@@ -167,6 +188,7 @@ export class UpdateCartItemDto {
 }
 
 export class CheckoutDto {
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) expectedTotal?: number;
   @IsUUID()
   deliveryAddressId!: string;
 
@@ -257,8 +279,24 @@ export class RatingDto {
   comment?: string;
 }
 
-export class MockPaymentDecisionDto {
-  @ApiPropertyOptional({ default: true })
+export class PaymentReviewDto {
   @IsBoolean()
   approved!: boolean;
+  @IsString() @Length(10, 1000) reason!: string;
+}
+
+export class PaymentEvidenceDto {
+  @IsString() @Length(4, 80) operationCode!: string;
+  @IsUUID() evidenceFileId!: string;
+}
+export class MerchantApplicationDto extends OmitType(CreateMerchantDto, ['ownerUserId'] as const) {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(6) @IsUUID('4', { each: true }) documentIds!: string[];
+}
+export class ApplicationReviewDto {
+  @IsIn(['APPROVED', 'REJECTED', 'SUSPENDED']) status!: 'APPROVED' | 'REJECTED' | 'SUSPENDED';
+  @IsString() @Length(10, 1000) reason!: string;
+}
+export class SubOrderTransitionDto {
+  @IsIn(['PREPARING', 'READY_FOR_PICKUP', 'CANCELLED']) status!: 'PREPARING' | 'READY_FOR_PICKUP' | 'CANCELLED';
+  @IsOptional() @IsString() @Length(10, 1000) reason?: string;
 }

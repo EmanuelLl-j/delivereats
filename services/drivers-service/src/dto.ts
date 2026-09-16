@@ -1,7 +1,12 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, OmitType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
+  IsIn,
+  IsISO8601,
+  Length,
   IsEnum,
   IsLatitude,
   IsLongitude,
@@ -45,6 +50,7 @@ export class DestinationDto extends CoordinatesDto {
 }
 
 export class OfferAssignmentDto {
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(3) @IsEnum(VehicleType, { each: true }) vehicleTypes?: VehicleType[];
   @IsUUID()
   orderId!: string;
 
@@ -76,13 +82,14 @@ export class LocationDto extends CoordinatesDto {
   orderId?: string;
 
   @IsOptional()
-  @IsString()
+  @IsISO8601()
   timestamp?: string;
 }
 
 export class AdminDriverStatusDto {
   @IsEnum(DriverStatus)
   status!: DriverStatus;
+  @IsString() @Length(10, 1000) reason!: string;
 }
 
 export class CreateDriverProfileDto {
@@ -107,4 +114,20 @@ export class CreateDriverProfileDto {
 export class DriverOrderStatusDto {
   @IsEnum(OrderStatus)
   status!: OrderStatus.ON_THE_WAY | OrderStatus.DELIVERED;
+}
+
+export class DriverApplicationDto extends OmitType(CreateDriverProfileDto, ['userId'] as const) {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(6) @IsUUID('4', { each: true }) documentIds!: string[];
+}
+export class DriverReviewDto {
+  @IsIn(['APPROVED', 'REJECTED', 'SUSPENDED']) status!: 'APPROVED' | 'REJECTED' | 'SUSPENDED';
+  @IsString() @Length(10, 1000) reason!: string;
+}
+export class ShipmentCodeDto {
+  @IsIn(['PICKUP', 'DELIVERY']) phase!: 'PICKUP' | 'DELIVERY';
+  @IsString() @Length(6, 6) code!: string;
+  @IsOptional() @IsUUID() evidenceFileId?: string;
+}
+export class LocationBatchDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(120) @ValidateNested({ each: true }) @Type(() => LocationDto) locations!: LocationDto[];
 }

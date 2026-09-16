@@ -4,8 +4,8 @@ import { Bike, LogOut, ShieldCheck } from 'lucide-react-native';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, colors, Header } from '@/components/ui';
-import { api } from '@/lib/api';
-import { clearSession } from '@/lib/session';
+import { api, logout as endSession } from '@/lib/api';
+import { useQueryClient } from '@tanstack/react-query';
 type Profile = {
   documentNumber: string;
   vehicleType: string;
@@ -13,14 +13,18 @@ type Profile = {
   licenseNumber?: string;
   rating: string;
   status: string;
+  applicationStatus: string;
 };
 export default function ProfileScreen() {
+  const cache = useQueryClient();
+  const user = useQuery({ queryKey: ['profile'], queryFn: () => api<{ firstName: string; lastName: string }>('/users/auth/profile') });
   const profile = useQuery({
     queryKey: ['driver-profile'],
     queryFn: () => api<Profile>('/drivers/drivers/me'),
   });
   async function logout() {
-    await clearSession();
+    await endSession().catch(() => undefined);
+    cache.clear();
     router.replace('/login');
   }
   const rows = [
@@ -33,7 +37,7 @@ export default function ProfileScreen() {
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.content}>
         <Header
-          eyebrow="CUENTA VERIFICADA"
+          eyebrow="MI CUENTA"
           title="Perfil"
           subtitle="Información del repartidor y su vehículo."
         />
@@ -41,13 +45,13 @@ export default function ProfileScreen() {
           <View style={styles.avatar}>
             <Bike size={30} color={colors.navy} />
           </View>
-          <Text style={styles.name}>Luis Huamán</Text>
+          <Text style={styles.name}>{user.data ? `${user.data.firstName} ${user.data.lastName}` : 'Cargando…'}</Text>
           <View style={styles.verified}>
             <ShieldCheck size={13} color={colors.green} />
-            <Text style={styles.verifiedText}>REPARTIDOR APROBADO</Text>
+            <Text style={styles.verifiedText}>{profile.data?.applicationStatus === 'APPROVED' ? 'REPARTIDOR APROBADO' : 'SOLICITUD PENDIENTE'}</Text>
           </View>
           <Text style={styles.rating}>
-            ★ {Number(profile.data?.rating ?? 5).toFixed(1)} · {profile.data?.status}
+            {profile.data ? `★ ${Number(profile.data.rating).toFixed(1)} · ${profile.data.status}` : 'Aún sin actividad'}
           </Text>
         </View>
         <View style={styles.details}>
@@ -59,6 +63,10 @@ export default function ProfileScreen() {
           ))}
         </View>
         <Button label="Cerrar sesión" onPress={logout} tone="ghost" />
+        <View style={{ gap: 10, marginTop: 12 }}>
+          <Button label="Mi solicitud de repartidor" onPress={() => router.push('/application')} tone="ghost" />
+          {(['profile', 'security', 'privacy', 'legal', 'support'] as const).map((mode, index) => <Button key={mode} label={['Perfil y verificación', 'Seguridad', 'Privacidad', 'Términos', 'Ayuda e incidencias'][index]!} tone="ghost" onPress={() => router.push({ pathname: '/account', params: { mode } })} />)}
+        </View>
         <View style={styles.version}>
           <LogOut size={13} color="#94A3B8" />
           <Text style={styles.versionText}>DeliverEats Driver v1.0.0</Text>

@@ -4,8 +4,8 @@ import { ChevronRight, LogOut, MapPin, Settings, ShieldCheck } from 'lucide-reac
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, colors, ScreenHeader } from '@/components/ui';
-import { api } from '@/lib/api';
-import { clearSession } from '@/lib/session';
+import { api, logout as endSession } from '@/lib/api';
+import { useQueryClient } from '@tanstack/react-query';
 
 type Profile = {
   firstName: string;
@@ -20,18 +20,23 @@ type Profile = {
 };
 
 export default function ProfileScreen() {
+  const cache = useQueryClient();
   const profile = useQuery({
     queryKey: ['profile'],
     queryFn: () => api<Profile>('/users/auth/profile'),
   });
   const user = profile.data;
   async function logout() {
-    await clearSession();
+    await endSession().catch(() => undefined);
+    cache.clear();
     router.replace('/login');
   }
   const menu = [
-    { Icon: Settings, label: 'Preferencias' },
-    { Icon: ShieldCheck, label: 'Seguridad y contraseña' },
+    { Icon: Settings, label: 'Editar perfil y verificar correo', mode: 'profile' },
+    { Icon: ShieldCheck, label: 'Seguridad y contraseña', mode: 'security' },
+    { Icon: ShieldCheck, label: 'Privacidad y mis datos', mode: 'privacy' },
+    { Icon: ShieldCheck, label: 'Términos y aceptaciones', mode: 'legal' },
+    { Icon: Settings, label: 'Ayuda e incidencias', mode: 'support' },
   ];
   return (
     <SafeAreaView style={styles.safe}>
@@ -44,7 +49,7 @@ export default function ProfileScreen() {
         <View style={styles.profile}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
-              {user ? `${user.firstName[0]}${user.lastName[0]}` : 'AQ'}
+              {user ? `${user.firstName[0]}${user.lastName[0]}` : '—'}
             </Text>
           </View>
           <Text style={styles.name}>
@@ -59,6 +64,7 @@ export default function ProfileScreen() {
           </View>
         </View>
         <Text style={styles.section}>DIRECCIONES</Text>
+        <Button label="Administrar direcciones" onPress={() => router.push('/addresses')} variant="ghost" />
         {user?.customerProfile?.addresses.map((address) => (
           <View key={address.id} style={styles.address}>
             <MapPin size={18} color={colors.amber} />
@@ -72,8 +78,8 @@ export default function ProfileScreen() {
           </View>
         ))}
         <Text style={styles.section}>CONFIGURACIÓN</Text>
-        {menu.map(({ Icon, label }) => (
-          <Pressable key={label} style={styles.menu}>
+        {menu.map(({ Icon, label, mode }) => (
+          <Pressable key={label} style={styles.menu} onPress={() => router.push({ pathname: '/account', params: { mode } })}>
             <Icon size={19} color={colors.navy2} />
             <Text style={styles.menuText}>{label}</Text>
             <ChevronRight size={18} color="#94A3B8" />

@@ -1,15 +1,19 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ArrowLeft, Bike, CheckCircle2, Circle, MapPinned } from 'lucide-react-native';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, colors, ScreenHeader } from '@/components/ui';
+import { Button, colors, Field, ScreenHeader } from '@/components/ui';
+import { PaymentAction } from '@/components/payment-action';
 import { api } from '@/lib/api';
 
 type Order = {
   id: string;
   orderNumber: string;
   status: string;
+  type: string;
+  shipment?: { pickupAddress: string; contentDescription: string; recipientName: string; reviewReason?: string };
   total: string;
   subtotal: string;
   deliveryFee: string;
@@ -30,12 +34,20 @@ type Order = {
 
 export default function OrderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const cache = useQueryClient();
+  const [showCode, setShowCode] = useState(false);
+  const [reason, setReason] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
   const order = useQuery({
     queryKey: ['order', id],
     queryFn: () => api<Order>(`/orders/orders/${id}`),
     refetchInterval: 5_000,
   });
   const data = order.data;
+  useEffect(() => setShowCode(false), [data?.status]);
+  const codes = useQuery({ queryKey: ['shipment-code', id, data?.status], queryFn: () => api<{ phase: string | null; code: string | null }>('/orders/shipments/' + id + '/codes'), enabled: showCode && data?.type === 'PERSONAL_SHIPMENT', gcTime: 0, staleTime: 0, retry: false });
+  const cancel = useMutation({ mutationFn: () => api('/orders/orders/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'CANCELLED' }) }), onSuccess: () => cache.invalidateQueries({ queryKey: ['order', id] }), onError: error => setActionMessage(error.message) });
+  const refund = useMutation({ mutationFn: () => api('/orders/orders/' + id + '/refunds', { method: 'POST', body: JSON.stringify({ reason }) }), onSuccess: () => { setReason(''); setActionMessage('Solicitud de reembolso registrada. Su aprobación no implica una transferencia realizada.'); }, onError: error => setActionMessage(error.message) });
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -70,6 +82,17 @@ export default function OrderDetail() {
                     : 'La operación se actualiza automáticamente'}
           </Text>
         </View>
+        {order.isError && <Text accessibilityRole="alert" style={{ color: colors.red }}>{order.error.message}</Text>}
+        {data?.status === 'REQUIRES_REVIEW' && <Text style={{ color: '#92400e' }}>Envío restringido pendiente de revisión. Todavía no se asignará ni cobrará.</Text>}
+        {data?.shipment && <View style={styles.summary}><Text style={styles.merchant}>Envío personal</Text><Text>Recogida: {data.shipment.pickupAddress}</Text><Text>Contenido: {data.shipment.contentDescription}</Text><Text>Recibe: {data.shipment.recipientName}</Text>{data.shipment.reviewReason && <Text>Revisión: {data.shipment.reviewReason}</Text>}</View>}
+        {data?.type === 'PERSONAL_SHIPMENT' && ['ASSIGNED', 'ON_THE_WAY'].includes(data.status) && <View style={styles.summary}>
+          <Text style={{ color: colors.navy }}>Entrega el código únicamente al verificar físicamente {data.status === 'ASSIGNED' ? 'la recogida del paquete' : 'la entrega al destinatario'}. No lo envíes por el chat.</Text>
+          <Button label={showCode ? 'Ocultar código' : 'Mostrar código de ' + (data.status === 'ASSIGNED' ? 'recogida' : 'entrega')} onPress={() => setShowCode(value => !value)} />
+          {showCode && codes.data?.code && <Text selectable style={{ fontSize: 32, fontWeight: '900', textAlign: 'center', letterSpacing: 6, color: colors.navy }}>{codes.data.code}</Text>}
+          {showCode && codes.isError && <Text style={{ color: colors.red }}>{codes.error.message}</Text>}
+        </View>}
+        {data?.status === 'PENDING' && <PaymentAction orderId={data.id} method={data.paymentMethod} status={data.paymentStatus} />}
+        {data?.assignedDriverId && !['CANCELLED'].includes(data.status) && <Button label="Chat y llamada del pedido" onPress={() => router.push({ pathname: '/chat/[id]', params: { id: data.id } })} />}
         {data?.assignedDriverId && !['DELIVERED', 'CANCELLED'].includes(data.status) ? (
           <Button
             label="Ver tracking GPS"
@@ -77,7 +100,7 @@ export default function OrderDetail() {
             variant="amber"
           />
         ) : null}
-        <Text style={styles.section}>RECOJOS</Text>
+        {!!data?.subOrders.length && <Text style={styles.section}>RECOJOS</Text>}
         {data?.subOrders.map((subOrder, index) => (
           <View key={subOrder.id} style={styles.pickup}>
             <View style={styles.sequence}>
@@ -142,6 +165,10 @@ export default function OrderDetail() {
             variant="amber"
           />
         )}
+        {data && ['PENDING', 'CONFIRMED', 'REQUIRES_REVIEW'].includes(data.status) && <Button label="Solicitar cancelación del pedido" variant="ghost" loading={cancel.isPending} onPress={() => cancel.mutate()} />}
+        {data && ['APPROVED', 'PAID'].includes(data.paymentStatus) && <View style={styles.summary}><Field label="Motivo de reembolso (mínimo 10 caracteres)" value={reason} onChangeText={setReason} /><Button label="Solicitar revisión de reembolso" variant="ghost" loading={refund.isPending} disabled={reason.trim().length < 10} onPress={() => refund.mutate()} /></View>}
+        <Button label="Reportar un problema" variant="ghost" onPress={() => router.push({ pathname: '/account', params: { mode: 'support', orderId: id } })} />
+        {!!actionMessage && <Text accessibilityRole="alert" style={{ color: colors.navy }}>{actionMessage}</Text>}
         <View style={styles.mapHint}>
           <MapPinned size={17} color={colors.navy2} />
           <Text style={styles.mapHintText}>
