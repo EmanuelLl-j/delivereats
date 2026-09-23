@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional, ServiceUnavailableException } from '@nestjs/common';
-import amqp, { type ChannelModel, type ConfirmChannel } from 'amqplib';
+import * as amqp from 'amqplib';
+import type { ChannelModel, ConfirmChannel } from 'amqplib';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '@delivereats/shared-types';
 
@@ -47,7 +48,6 @@ export class EventPublisher implements OnModuleInit, OnModuleDestroy {
   }
   healthy() { return Boolean(this.channel); }
 
-  // Call with the Prisma transaction client to atomically commit state and its event.
   async enqueue<T extends Record<string, unknown>>(store: Pick<OutboxStore, 'eventOutbox'>, name: string, payload: T, correlationId: string = randomUUID()) {
     const envelope: EventEnvelope<T> = { id: randomUUID(), name, version: 1, occurredAt: new Date().toISOString(), correlationId, payload };
     await store.eventOutbox.create({ data: { id: envelope.id, name, correlationId, payload: seal(JSON.stringify(envelope)) } });
@@ -66,6 +66,7 @@ export class EventPublisher implements OnModuleInit, OnModuleDestroy {
     try {
       if (!this.channel) {
         if (!process.env.RABBITMQ_URL) return;
+        // Se usa amqp.connect gracias al comodín de importación
         const connection = await amqp.connect(process.env.RABBITMQ_URL, { timeout: 4_000 });
         this.connection = connection;
         const disconnected = () => {
@@ -78,7 +79,6 @@ export class EventPublisher implements OnModuleInit, OnModuleDestroy {
         connection.on('close', disconnected);
         const channel = await connection.createConfirmChannel();
         await channel.assertExchange('delivereats.events', 'topic', { durable: true });
-        // The durable target is declared by the publisher too, so first-start ordering cannot drop events.
         await channel.assertExchange('delivereats.dlx', 'topic', { durable: true });
         await channel.assertQueue('notifications.events', { durable: true, arguments: { 'x-dead-letter-exchange': 'delivereats.dlx' } });
         await channel.bindQueue('notifications.events', 'delivereats.events', '#');
