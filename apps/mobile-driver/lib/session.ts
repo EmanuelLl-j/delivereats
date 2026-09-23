@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-
-export type Session = { accessToken: string; refreshToken: string; user: { id: string; role: string; firstName: string; lastName?: string; emailVerifiedAt?: string | null } };
+import { isSession, parseSession, type Session } from './session-contract';
+export type { Session } from './session-contract';
 const key = 'delivereats.driver.session';
 let webSession: Session | null = null;
 const listeners = new Set<(session: Session | null) => void>();
@@ -12,11 +12,14 @@ export async function getSession(): Promise<Session | null> {
     try { globalThis.localStorage?.removeItem(key); } catch { /* Legacy token cleanup is best effort. */ }
     return webSession;
   }
-  const value = await SecureStore.getItemAsync(key);
-  if (!value) return null;
-  try { return JSON.parse(value) as Session; } catch { await SecureStore.deleteItemAsync(key); return null; }
+  let value: string | null;
+  try { value = await SecureStore.getItemAsync(key); } catch { return null; }
+  const session = parseSession(value);
+  if (value && !session) { try { await SecureStore.deleteItemAsync(key); } catch { /* Corrupt storage cleanup is best effort. */ } }
+  return session;
 }
 export async function saveSession(session: Session) {
+  if (!isSession(session)) throw new Error('La sesión recibida no cumple el contrato DRIVER.');
   const previous = await getSession();
   if (Platform.OS === 'web') webSession = session;
   else await SecureStore.setItemAsync(key, JSON.stringify(session), { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });

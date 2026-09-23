@@ -3,10 +3,11 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { colors } from '@/components/ui';
 import { getSession } from '@/lib/session';
+import { resolveStartupRoute } from '@/lib/session-contract';
 export default function Index() {
   const [to, setTo] = useState<string>();
   useEffect(() => {
-    void getSession().then((session) => setTo(session ? '/(tabs)/home' : '/login'));
+    void resolveStartupRoute(getSession).then(setTo);
   }, []);
   if (to) return <Redirect href={to as never} />;
   return (

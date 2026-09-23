@@ -27,7 +27,7 @@ const config: ExpoConfig = {
   ],
   experiments: { typedRoutes: true },
   extra: {
-    apiUrl, socketUrl, pushConfigured: Boolean(googleServicesFile),
+    apiUrl, socketUrl, pushConfigured: Boolean(googleServicesFile), mapsConfigured: Boolean(process.env.GOOGLE_MAPS_ANDROID_API_KEY),
     ...(process.env.EXPO_EAS_PROJECT_ID ? { eas: { projectId: process.env.EXPO_EAS_PROJECT_ID } } : {}),
   },
   android: {
