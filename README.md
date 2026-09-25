@@ -58,3 +58,4 @@ Consulta [Pruebas](docs/testing.md). E2E crea servicios, cuatro bases, un vhost 
 
 Los APK/AAB, la publicación y las integraciones externas requieren pruebas adicionales; una exportación web no acredita una app instalada. Revisa los pendientes antes de una salida real a producción.
 
+
