@@ -7,5 +7,6 @@ void bootstrapService({
   serviceName: 'Usuarios',
   environmentService: 'users-service',
   port: Number(process.env.PORT ?? 3001),
+  globalPrefix: 'api',
   description: 'Autenticación, perfiles, roles, clientes y administración de usuarios.',
 });
