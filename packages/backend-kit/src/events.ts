@@ -5,6 +5,21 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import type { EventEnvelope } from '@delivereats/shared-types';
 
 type OutboxRow = { id: string; name: string; payload: string; correlationId: string };
+
+function rabbitFailureCategory(error: unknown): string {
+  const candidate = error as { code?: unknown; message?: unknown } | null;
+  const code = typeof candidate?.code === 'string' ? candidate.code.toUpperCase() : '';
+  const message = typeof candidate?.message === 'string' ? candidate.message.toUpperCase() : '';
+  const details = `${code} ${message}`;
+  if (/ENOTFOUND|EAI_AGAIN|DNS/.test(details)) return 'DNS_FAILURE';
+  if (/ECONNREFUSED/.test(details)) return 'CONNECTION_REFUSED';
+  if (/ETIMEDOUT|TIMEOUT/.test(details)) return 'CONNECTION_TIMEOUT';
+  if (/ACCESS_REFUSED|AUTHENTICATION|LOGIN WAS REFUSED|NOT ALLOWED/.test(details)) return 'AUTHENTICATION_OR_VHOST';
+  if (/PRECONDITION_FAILED|INEQUIVALENT ARG/.test(details)) return 'BROKER_TOPOLOGY_CONFLICT';
+  if (/TLS|SSL|CERTIFICATE|HANDSHAKE/.test(details)) return 'TLS_FAILURE';
+  return code ? `CONNECTION_FAILURE_${code.replace(/[^A-Z0-9_-]/g, '').slice(0, 32)}` : 'CONNECTION_FAILURE';
+}
+
 export interface OutboxStore {
   eventOutbox: {
     create(input: { data: OutboxRow }): Promise<unknown>;
@@ -101,7 +116,13 @@ export class EventPublisher implements OnModuleInit, OnModuleDestroy {
           break;
         }
       }
-    } catch { this.logger.warn('Publicación temporalmente no disponible; los eventos persisten en outbox'); this.channel = undefined; await this.connection?.close().catch(() => undefined); this.connection = undefined; }
+    } catch (error) {
+      // Log only a fixed category. Error messages from AMQP libraries can contain connection details.
+      this.logger.warn(`Publicación temporalmente no disponible (${rabbitFailureCategory(error)}); los eventos persisten en outbox`);
+      this.channel = undefined;
+      await this.connection?.close().catch(() => undefined);
+      this.connection = undefined;
+    }
     finally { this.running = false; }
   }
   async onModuleDestroy() {

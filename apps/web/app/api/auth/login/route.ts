@@ -10,15 +10,28 @@ type LoginResponse = {
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return NextResponse.json({ message: 'Origen no autorizado' }, { status: 403 });
   const payload: unknown = await request.json();
+  const usersServiceUrl = process.env.USERS_SERVICE_URL?.trim().replace(/\/+$/, '');
+  if (!usersServiceUrl) {
+    return NextResponse.json(
+      { message: 'Falta configurar USERS_SERVICE_URL en el entorno de producción' },
+      { status: 503 },
+    );
+  }
+
   const upstream = await fetch(
-    `${process.env.USERS_SERVICE_URL ?? 'http://localhost:3001'}/auth/login`,
+    `${usersServiceUrl}/auth/login`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-correlation-id': crypto.randomUUID() },
       body: JSON.stringify(payload),
       cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
     },
-  ).catch(() => null);
+  ).catch((error: unknown) => {
+    // Keep credentials and upstream URLs out of Vercel logs.
+    console.error('[auth/login] users service request failed', error instanceof Error ? error.name : 'UnknownError');
+    return null;
+  });
 
   if (!upstream) {
     return NextResponse.json(
