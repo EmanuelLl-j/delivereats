@@ -13,17 +13,12 @@ type Context = { params: Promise<{ service: string; path: string[] }> };
 
 /**
  * Respuesta vacía por defecto cuando un microservicio no está disponible.
- * El dashboard tolera listas vacías sin romper.
+ * El dashboard espera arrays en la mayoría de endpoints, así que devolvemos []
+ * salvo casos especiales (unread-count espera un objeto con count).
  */
 function fallbackResponse(path: string[]): { status: number; body: unknown } {
   const joined = path.join('/');
   if (joined.includes('unread-count')) return { status: 200, body: { count: 0 } };
-  if (joined.includes('metrics') || joined.includes('analytics'))
-    return { status: 200, body: { count: 0, items: [], data: [], total: 0, series: [] } };
-  if (joined.includes('system'))
-    return { status: 200, body: { status: 'degraded', services: [] } };
-  if (joined.includes('user-metrics'))
-    return { status: 200, body: { totalUsers: 0, activeUsers: 0, usersByRole: {}, usersByStatus: {}, recentSignups: [] } };
   return { status: 200, body: [] };
 }
 
@@ -52,13 +47,13 @@ async function proxy(request: Request, context: Context) {
     signal: AbortSignal.timeout(20_000),
   }).catch(() => null);
 
-  // Si el servicio no responde (no desplegado en Render), devolver respuesta vacía para no romper el dashboard
+  // Servicio no responde (no desplegado) → fallback tolerante
   if (!response) {
     const fallback = fallbackResponse(path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  // Si el servicio responde con 503/502 (no listo), también fallback para los servicios opcionales
+  // Servicio responde 502/503 (no listo) y NO es users-service → fallback
   if ((response.status === 503 || response.status === 502) && service !== 'users') {
     const fallback = fallbackResponse(path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
