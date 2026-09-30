@@ -18,4 +18,20 @@ export class HealthController {
     response.status(ready ? 200 : 503);
     return { status: ready ? 'ready' : 'not_ready', service: 'users-service', dependencies, optional };
   }
+
+  @Get('debug/prisma') async debugPrisma() {
+    const result: Record<string, any> = {};
+    result.env = { nodeVersion: process.version, platform: process.platform, arch: process.arch, cwd: process.cwd() };
+    try { await this.prisma.$queryRaw`SELECT 1 as x`; result.rawQuery = 'OK'; }
+    catch (e: any) { result.rawQuery = `ERROR: ${e.constructor?.name}: ${e.message}`; }
+    try { result.clientModelKeys = Object.keys(this.prisma).filter(k => !k.startsWith('_') && !k.startsWith('$')).sort(); }
+    catch (e: any) { result.clientModelKeys = `ERROR: ${e.message}`; }
+    try { const c = await this.prisma.user.count(); result.userCount = c; }
+    catch (e: any) { result.userCount = `ERROR: ${e.constructor?.name}: ${e.message}`; }
+    try { const c = await this.prisma.legalDocument.count(); result.legalCount = c; }
+    catch (e: any) { result.legalCount = `ERROR: ${e.constructor?.name}: ${e.message}`; }
+    try { const c = await this.prisma.eventOutbox.count(); result.outboxCount = c; }
+    catch (e: any) { result.outboxCount = `ERROR: ${e.constructor?.name}: ${e.message}`; }
+    return result;
+  }
 }
