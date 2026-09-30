@@ -13,12 +13,30 @@ type Context = { params: Promise<{ service: string; path: string[] }> };
 
 /**
  * Respuesta vacía por defecto cuando un microservicio no está disponible.
- * El dashboard espera arrays en la mayoría de endpoints, así que devolvemos []
- * salvo casos especiales (unread-count espera un objeto con count).
+ * Cada endpoint tiene un shape específico que el frontend espera.
  */
-function fallbackResponse(path: string[]): { status: number; body: unknown } {
-  const joined = path.join('/');
-  if (joined.includes('unread-count')) return { status: 200, body: { count: 0 } };
+function fallbackResponse(service: string, path: string[]): { status: number; body: unknown } {
+  const joined = `/${service}/${path.join('/')}`.toLowerCase();
+
+  // users-service endpoints (shape por si falla)
+  if (joined.includes('/users/admin/user-metrics'))
+    return { status: 200, body: { active: 0, total: 0, usersByRole: {}, usersByStatus: {} } };
+
+  // orders-service endpoints
+  if (joined.includes('/orders/admin/analytics'))
+    return { status: 200, body: { hours: [] } };
+  if (joined.includes('/orders/admin/system'))
+    return { status: 200, body: [] };
+  if (joined.includes('/orders/admin/metrics'))
+    return { status: 200, body: { merchants: 0, ordersToday: 0, activeOrders: 0, approvedPayments: 0, rejectedPayments: 0, revenue: 0 } };
+  if (joined.includes('/orders/admin/unread-count'))
+    return { status: 200, body: { count: 0 } };
+
+  // notifications-service endpoints
+  if (joined.includes('/notifications/unread-count'))
+    return { status: 200, body: { count: 0 } };
+
+  // drivers-service endpoints y resto → array vacío
   return { status: 200, body: [] };
 }
 
@@ -47,15 +65,15 @@ async function proxy(request: Request, context: Context) {
     signal: AbortSignal.timeout(20_000),
   }).catch(() => null);
 
-  // Servicio no responde (no desplegado) → fallback tolerante
+  // Servicio no responde (no desplegado) → fallback
   if (!response) {
-    const fallback = fallbackResponse(path);
+    const fallback = fallbackResponse(service, path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  // Servicio responde 502/503 (no listo) y NO es users-service → fallback
+  // Servicio responde 502/503 y NO es users-service → fallback
   if ((response.status === 503 || response.status === 502) && service !== 'users') {
-    const fallback = fallbackResponse(path);
+    const fallback = fallbackResponse(service, path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
   }
 
