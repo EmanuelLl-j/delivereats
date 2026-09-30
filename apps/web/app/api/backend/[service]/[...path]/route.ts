@@ -12,31 +12,59 @@ const serviceUrls: Record<string, string> = {
 type Context = { params: Promise<{ service: string; path: string[] }> };
 
 /**
- * Respuesta vacía por defecto cuando un microservicio no está disponible.
- * Cada endpoint tiene un shape específico que el frontend espera.
+ * Fallback con la forma exacta que el frontend espera para cada endpoint.
+ * Se usa cuando un microservicio no está desplegado en producción.
  */
 function fallbackResponse(service: string, path: string[]): { status: number; body: unknown } {
   const joined = `/${service}/${path.join('/')}`.toLowerCase();
 
-  // users-service endpoints (shape por si falla)
+  // ---------- users-service ----------
   if (joined.includes('/users/admin/user-metrics'))
     return { status: 200, body: { active: 0, total: 0, usersByRole: {}, usersByStatus: {} } };
+  if (joined.includes('/legal/documents'))
+    return { status: 200, body: [] };
 
-  // orders-service endpoints
+  // ---------- orders-service · admin ----------
   if (joined.includes('/orders/admin/analytics'))
     return { status: 200, body: { hours: [] } };
   if (joined.includes('/orders/admin/system'))
     return { status: 200, body: [] };
   if (joined.includes('/orders/admin/metrics'))
     return { status: 200, body: { merchants: 0, ordersToday: 0, activeOrders: 0, approvedPayments: 0, rejectedPayments: 0, revenue: 0 } };
-  if (joined.includes('/orders/admin/unread-count'))
-    return { status: 200, body: { count: 0 } };
 
-  // notifications-service endpoints
-  if (joined.includes('/notifications/unread-count'))
-    return { status: 200, body: { count: 0 } };
+  // ---------- orders-service · comercio ----------
+  if (joined.includes('/orders/commerce/me'))
+    // El frontend interpreta null como "sin comercio registrado"
+    return { status: 200, body: null };
+  if (joined.includes('/orders/commerce/dashboard'))
+    return {
+      status: 200,
+      body: {
+        merchant: { name: 'Sin comercio', isOpen: false, isActive: false, applicationStatus: 'DRAFT' },
+        merchants: [],
+        kpis: { ordersToday: 0, activeOrders: 0, revenue: 0, averageTicket: 0, averagePreparationMinutes: null, completedOrders: 0 },
+        orders: [],
+      },
+    };
+  if (joined.includes('/orders/commerce/metrics'))
+    return {
+      status: 200,
+      body: { orders: 0, completed: 0, revenue: 0, averageTicket: 0, averagePreparationMinutes: null, history: [] },
+    };
+  if (joined.includes('/orders/orders'))
+    return { status: 200, body: [] };
 
-  // drivers-service endpoints y resto → array vacío
+  // ---------- notifications ----------
+  if (joined.includes('unread-count'))
+    return { status: 200, body: { count: 0 } };
+  if (joined.includes('/notifications/notifications'))
+    return { status: 200, body: [] };
+
+  // ---------- drivers ----------
+  if (joined.includes('/drivers/admin/drivers'))
+    return { status: 200, body: [] };
+
+  // ---------- default ----------
   return { status: 200, body: [] };
 }
 
@@ -65,13 +93,10 @@ async function proxy(request: Request, context: Context) {
     signal: AbortSignal.timeout(20_000),
   }).catch(() => null);
 
-  // Servicio no responde (no desplegado) → fallback
   if (!response) {
     const fallback = fallbackResponse(service, path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
   }
-
-  // Servicio responde 502/503 y NO es users-service → fallback
   if ((response.status === 503 || response.status === 502) && service !== 'users') {
     const fallback = fallbackResponse(service, path);
     return NextResponse.json(fallback.body, { status: fallback.status, headers: { 'Cache-Control': 'no-store' } });
