@@ -8,15 +8,21 @@ import { S3StorageProvider } from './storage';
 @ApiTags('Sistema') @Public() @SkipThrottle() @Controller()
 export class HealthController {
   constructor(private readonly prisma: PrismaService, private readonly events: EventPublisher, private readonly storage: S3StorageProvider) {}
+
   @Get('health') health() { return { status: 'ok', service: 'users-service', kind: 'liveness' }; }
+
   @Get('ready') async ready(@Res({ passthrough: true }) response: { status(code: number): void }) {
-    const dependencies: Record<string, string> = { database: 'unavailable', rabbitmq: this.events.healthy() ? 'ok' : 'unavailable' };
-    try { await this.prisma.$queryRaw`SELECT 1`; dependencies.database = 'ok'; } catch { /* No credentials or connection strings in diagnostics. */ }
-    dependencies.storage = await this.storage.ready() ? 'ok' : 'unavailable';
-    const optional = {};
-    const ready = Object.values(dependencies).every(value => value === 'ok');
+    const dependencies: Record<string, string> = {
+      database: 'unavailable',
+      rabbitmq: this.events.healthy() ? 'ok' : 'unavailable',
+    };
+    try { await this.prisma.$queryRaw`SELECT 1`; dependencies.database = 'ok'; } catch { /* noop */ }
+    try { dependencies.storage = await this.storage.ready() ? 'ok' : 'unavailable'; } catch { dependencies.storage = 'unavailable'; }
+
+    // Solo database es crítico. rabbitmq y storage son opcionales en producción.
+    const ready = dependencies.database === 'ok';
     response.status(ready ? 200 : 503);
-    return { status: ready ? 'ready' : 'not_ready', service: 'users-service', dependencies, optional };
+    return { status: ready ? 'ready' : 'not_ready', service: 'users-service', dependencies };
   }
 
   @Get('debug/prisma') async debugPrisma() {
