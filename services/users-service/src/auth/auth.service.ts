@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, UserRole as PrismaUserRole, UserStatus } from '../generated/prisma';
-import { compare, hash } from 'bcrypt';
+import { compare, hash } from 'bcryptjs';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { EventPublisher } from '@delivereats/backend-kit';
 import { UserRole, type JwtPayload } from '@delivereats/shared-types';
